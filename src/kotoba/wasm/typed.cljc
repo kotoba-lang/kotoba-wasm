@@ -336,10 +336,17 @@
         (= op 'component-list-get-f64) :f64
         (= op 'component-option-list-capability-count) :i64
         (= op 'component-result-list-capability-count) :i64
-        (= op 'component-option-record-capability-project-i64) :i64
-        (= op 'component-option-record-capability-project-f32) :f32
-        (= op 'component-option-record-capability-project-f64) :f64
-        (= op 'component-option-record-capability-project-bool) :bool
+        (contains?
+         '{component-option-record-capability-project-i64 :i64
+           component-option-record-capability-project-f32 :f32
+           component-option-record-capability-project-f64 :f64
+           component-option-record-capability-project-bool :bool}
+         op)
+        ('{component-option-record-capability-project-i64 :i64
+           component-option-record-capability-project-f32 :f32
+           component-option-record-capability-project-f64 :f64
+           component-option-record-capability-project-bool :bool}
+         op)
         (contains? '#{+ - * quot bit-xor bit-and bit-or bit-not
                       cap-call pair pair-first pair-second
                       i32-wrap u32-wrap i32-wrapping-add i32-wrapping-mul i32-xor
