@@ -90,12 +90,12 @@
   (testing "capacity is exactly the declared memory"
     (is (= wasm/component-arena-capacity
            (* wasm/component-memory-pages 65536))))
-  (testing "the arena covers one maximum vector, which is what sized it"
+  (testing "the arena covers a maximum request and result in one call"
     ;; value/vector-item-limit i64 elements. If the item limit moves, the page
     ;; count must move with it -- this is the assertion that says so.
-    (is (<= (* value/vector-item-limit 8)
+    (is (<= (* 2 value/vector-item-limit 8)
             (- wasm/component-arena-capacity wasm/component-arena-base))
-        "a maximum :vector-i64 must fit the arena above the base"))
+        "maximum :vector-i64 request and result must coexist above the base"))
   (testing "the module declares the pages the capacity assumes"
     (with-temp-module
       (fn [path]

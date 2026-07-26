@@ -1578,14 +1578,15 @@
 
   ADR 0077 decision 3 sizes this from the language's own bound rather than a
   round number: `value/vector-item-limit` is 16384 items, so one maximum
-  `:vector-i64` is 128 KiB of live data -- two pages exactly. The extra page is
-  headroom for the Canonical ABI's own string-copy allocations, which call
-  `cm32p2_realloc` an unpredictable number of times before a module's body
-  runs, plus the vector's length header.
+  `:vector-i64` is 128 KiB of live data -- two pages exactly. A named
+  capability can keep its lowered request live while lifting an equally large
+  result into the same module, so the arena covers two maximum vectors. The
+  extra page is headroom for result records and the Canonical ABI's other
+  allocations.
 
   Derived here rather than written as a literal so it cannot drift from the
   item limit it exists to cover."
-  (+ 1 (quot (+ (* 16384 8) (dec wasm-page-bytes)) wasm-page-bytes)))
+  (+ 1 (* 2 (quot (+ (* 16384 8) (dec wasm-page-bytes)) wasm-page-bytes))))
 
 (defn- component-memory-budget! [pages]
   (let [pages (or pages 16)]
