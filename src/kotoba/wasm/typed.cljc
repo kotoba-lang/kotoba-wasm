@@ -305,6 +305,10 @@
         (= op 'do) (infer-type (last args) env signatures)
         (= op 'typed-cap-call) (nth args 2)
         (= op 'component-assert-bool) :bool
+        (= op 'component-i64-to-i32) :bool
+        (= op 'component-i32-to-f32) :f32
+        (= op 'component-i64-to-f32) :f32
+        (= op 'component-i64-to-f64) :f64
         (contains? '#{+ - * quot bit-xor bit-and bit-or bit-not
                       cap-call pair pair-first pair-second
                       i32-wrap u32-wrap i32-wrapping-add i32-wrapping-mul i32-xor

@@ -536,6 +536,14 @@
                     (let [value (first args)]
                       (concat (emit* value env) [0x41 1 0x4b 0x04 0x40 0x00 0x0b]
                               (emit* value env)))
+                    (= op 'component-i64-to-i32)
+                    (concat (emit* (first args) env) [0xa7])
+                    (= op 'component-i32-to-f32)
+                    (concat (emit* (first args) env) [0xbe])
+                    (= op 'component-i64-to-f32)
+                    (concat (emit* (first args) env) [0xa7 0xbe])
+                    (= op 'component-i64-to-f64)
+                    (concat (emit* (first args) env) [0xbf])
                     (= op 'f64-to-bits)
                     (let [value-local (allocate! 0x7c)]
                       (concat (emit* (first args) env) [::local-set value-local]
