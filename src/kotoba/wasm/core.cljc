@@ -499,6 +499,30 @@
                    0x49 0x04 0x40 0x00 0x0b
                    ::local-get end-local 0x3f 0x00
                    0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b])}))
+            (emit-component-list-get [op args env]
+              (let [[pointer count index fallback
+                     max-items stride alignment] args
+                    {:keys [code pointer-local count-local]}
+                    (emit-component-list-validation
+                     pointer count max-items stride alignment env)
+                    index-local (allocate! 0x7e)
+                    i64-result? (= op 'component-list-get-i64)
+                    load-op (if i64-result? 0x29 0x2b)
+                    result-type (if i64-result? 0x7e 0x7c)]
+                (concat
+                 code
+                 (emit* index env) [::local-set index-local]
+                 ;; Unsigned comparison makes a negative i64 index take the
+                 ;; fallback branch without addressing memory.
+                 [::local-get index-local
+                  ::local-get count-local 0xad
+                  0x54 0x04 result-type
+                  ::local-get pointer-local
+                  ::local-get index-local 0xa7
+                  0x41] (sleb stride)
+                 [0x6c 0x6a load-op 0x03 0x00 0x05]
+                 (emit* fallback env)
+                 [0x0b])))
             (emit-assoc [type value index replacement replacement-type env]
               (concat (i32-const (descriptor-id type)) (emit* value env)
                       (i32-const index) (emit* replacement env)
@@ -654,29 +678,7 @@
                        [0x6c 0x6a load-op 0x03 0x00]))
                     (contains? '#{component-list-get-i64
                                   component-list-get-f64} op)
-                    (let [[pointer count index fallback
-                           max-items stride alignment] args
-                          {:keys [code pointer-local count-local]}
-                          (emit-component-list-validation
-                           pointer count max-items stride alignment env)
-                          index-local (allocate! 0x7e)
-                          i64-result? (= op 'component-list-get-i64)
-                          load-op (if i64-result? 0x29 0x2b)
-                          result-type (if i64-result? 0x7e 0x7c)]
-                      (concat
-                       code
-                       (emit* index env) [::local-set index-local]
-                       ;; Unsigned comparison makes a negative i64 index take
-                       ;; the fallback branch without addressing memory.
-                       [::local-get index-local
-                        ::local-get count-local 0xad
-                        0x54 0x04 result-type
-                        ::local-get pointer-local
-                        ::local-get index-local 0xa7
-                        0x41] (sleb stride)
-                       [0x6c 0x6a load-op 0x03 0x00 0x05]
-                       (emit* fallback env)
-                       [0x0b]))
+                    (emit-component-list-get op args env)
                     (= op 'f64-to-bits)
                     (let [value-local (allocate! 0x7c)]
                       (concat (emit* (first args) env) [::local-set value-local]
