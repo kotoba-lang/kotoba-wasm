@@ -449,6 +449,56 @@
                   (throw (ex-info "typed Wasm condition must be bool or i64"
                                   {:phase :wasm-typed-lowering
                                    :type type :form form})))))
+            (emit-component-list-validation
+              [pointer count max-items stride alignment env]
+              (when-not (and (integer? max-items)
+                             (<= 0 max-items 0x7fffffff)
+                             (integer? stride)
+                             (<= 1 stride 0x7fffffff)
+                             (<= (* max-items stride) 0xffffffff)
+                             (integer? alignment)
+                             (pos? alignment)
+                             (zero? (bit-and alignment (dec alignment)))
+                             (<= alignment 0x40000000))
+                (throw
+                 (ex-info "component list layout is invalid"
+                          {:phase :wasm-component-list-lowering
+                           :max-items max-items
+                           :stride stride
+                           :alignment alignment})))
+              (let [pointer-local (allocate! 0x7f)
+                    count-local (allocate! 0x7f)
+                    bytes-local (allocate! 0x7f)
+                    end-local (allocate! 0x7f)]
+                {:pointer-local pointer-local
+                 :count-local count-local
+                 :code
+                 (concat
+                  (emit* pointer env) [::local-set pointer-local]
+                  (emit* count env) [::local-set count-local]
+                  ;; Canonical list pointers are aligned even when the
+                  ;; selected list is empty.
+                  [::local-get pointer-local 0x41] (sleb (dec alignment))
+                  [0x71 0x45 0x04 0x40 0x05 0x00 0x0b]
+                  ;; The item count is unsigned and descriptor-bounded.
+                  [::local-get count-local 0x41] (sleb max-items)
+                  [0x4b 0x04 0x40 0x00 0x0b]
+                  ;; bytes = count * stride. Reject unsigned multiply
+                  ;; overflow independently of the configured bound.
+                  [::local-get count-local 0x41] (sleb stride)
+                  [0x6c ::local-set bytes-local
+                   ::local-get count-local 0x45 0x04 0x40 0x05
+                   ::local-get bytes-local 0x41] (sleb stride)
+                  [0x6e ::local-get count-local 0x47
+                   0x04 0x40 0x00 0x0b 0x0b]
+                  ;; end = ptr + bytes, rejecting unsigned wrap and a range
+                  ;; beyond this module's actual linear memory.
+                  [::local-get pointer-local ::local-get bytes-local
+                   0x6a ::local-set end-local
+                   ::local-get end-local ::local-get pointer-local
+                   0x49 0x04 0x40 0x00 0x0b
+                   ::local-get end-local 0x3f 0x00
+                   0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b])}))
             (emit-assoc [type value index replacement replacement-type env]
               (concat (i32-const (descriptor-id type)) (emit* value env)
                       (i32-const index) (emit* replacement env)
@@ -578,52 +628,30 @@
                         ::local-get length-local 0xad]))
                     (= op 'component-list-count)
                     (let [[pointer count max-items stride alignment] args
-                          pointer-local (allocate! 0x7f)
-                          count-local (allocate! 0x7f)
-                          bytes-local (allocate! 0x7f)
-                          end-local (allocate! 0x7f)]
-                      (when-not (and (integer? max-items)
-                                     (<= 0 max-items 0x7fffffff)
-                                     (integer? stride)
-                                     (<= 1 stride 0x7fffffff)
-                                     (<= (* max-items stride) 0xffffffff)
-                                     (integer? alignment)
-                                     (pos? alignment)
-                                     (zero? (bit-and alignment (dec alignment)))
-                                     (<= alignment 0x40000000))
-                        (throw
-                         (ex-info "component list layout is invalid"
-                                  {:phase :wasm-component-list-lowering
-                                   :max-items max-items
-                                   :stride stride
-                                   :alignment alignment})))
+                          {:keys [code count-local]}
+                          (emit-component-list-validation
+                           pointer count max-items stride alignment env)]
+                      (concat code [::local-get count-local 0xad]))
+                    (contains? '#{component-list-at-i64
+                                  component-list-at-f64} op)
+                    (let [[pointer count index max-items stride alignment] args
+                          {:keys [code pointer-local count-local]}
+                          (emit-component-list-validation
+                           pointer count max-items stride alignment env)
+                          index-local (allocate! 0x7e)
+                          load-op (if (= op 'component-list-at-i64) 0x29 0x2b)]
                       (concat
-                       (emit* pointer env) [::local-set pointer-local]
-                       (emit* count env) [::local-set count-local]
-                       ;; Canonical list pointers are aligned even when the
-                       ;; selected list is empty.
-                       [::local-get pointer-local 0x41] (sleb (dec alignment))
-                       [0x71 0x45 0x04 0x40 0x05 0x00 0x0b]
-                       ;; The item count is unsigned and descriptor-bounded.
-                       [::local-get count-local 0x41] (sleb max-items)
-                       [0x4b 0x04 0x40 0x00 0x0b]
-                       ;; bytes = count * stride.  Reject unsigned multiply
-                       ;; overflow independently of the configured bound.
-                       [::local-get count-local 0x41] (sleb stride)
-                       [0x6c ::local-set bytes-local
-                        ::local-get count-local 0x45 0x04 0x40 0x05
-                        ::local-get bytes-local 0x41] (sleb stride)
-                       [0x6e ::local-get count-local 0x47
-                        0x04 0x40 0x00 0x0b 0x0b]
-                       ;; end = ptr + bytes, rejecting unsigned wrap and a
-                       ;; range beyond this module's actual linear memory.
-                       [::local-get pointer-local ::local-get bytes-local
-                        0x6a ::local-set end-local
-                        ::local-get end-local ::local-get pointer-local
-                        0x49 0x04 0x40 0x00 0x0b
-                        ::local-get end-local 0x3f 0x00
-                        0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b
-                        ::local-get count-local 0xad]))
+                       code
+                       (emit* index env) [::local-set index-local]
+                       ;; One unsigned comparison rejects both negative i64
+                       ;; indices and indices at/past the selected count.
+                       [::local-get index-local
+                        ::local-get count-local 0xad
+                        0x5a 0x04 0x40 0x00 0x0b
+                        ::local-get pointer-local
+                        ::local-get index-local 0xa7
+                        0x41] (sleb stride)
+                       [0x6c 0x6a load-op 0x03 0x00]))
                     (= op 'f64-to-bits)
                     (let [value-local (allocate! 0x7c)]
                       (concat (emit* (first args) env) [::local-set value-local]

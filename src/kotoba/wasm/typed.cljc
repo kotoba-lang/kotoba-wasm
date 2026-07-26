@@ -330,6 +330,8 @@
         (= op 'component-i64-to-f64) :f64
         (= op 'component-string-byte-length) :i64
         (= op 'component-list-count) :i64
+        (= op 'component-list-at-i64) :i64
+        (= op 'component-list-at-f64) :f64
         (contains? '#{+ - * quot bit-xor bit-and bit-or bit-not
                       cap-call pair pair-first pair-second
                       i32-wrap u32-wrap i32-wrapping-add i32-wrapping-mul i32-xor
