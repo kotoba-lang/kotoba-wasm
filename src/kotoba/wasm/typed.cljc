@@ -9,8 +9,7 @@
 (def custom-section-name "kotoba.typed")
 
 (def ^:private primitive-tags
-  {:i64 0 :string 1 :keyword 2 :bool 3 :symbol 19 :bytes 20
-   :vector-i64 11 :f64 12 :f32 13
+  {:i64 0 :string 1 :keyword 2 :bool 3 :symbol 19 :vector-i64 11 :f64 12 :f32 13
    :vector-f64 14 :string-index 16 :disjoint-set-i64 17 :document 18})
 
 (def ^:private scalar-adt-aliases
@@ -31,7 +30,7 @@
            (or (contains? primitive-tags value)
                (contains? scalar-adt-aliases value)))
       (and (vector? value)
-           (contains? #{:option :result :variant :vector :set :map :record :ref :task :stream}
+           (contains? #{:option :result :variant :vector :set :map :record :ref}
                       (first value)))))
 
 (defn- uleb [n]
@@ -81,11 +80,6 @@
       :record (into [9] (concat (text-bytes (keyword-text (second descriptor)))
                                 (encode-named-members (nth descriptor 2))))
       :ref (into [15] (text-bytes (keyword-text (second descriptor))))
-      :task (into [21] (encode-descriptor (second descriptor)))
-      :stream (if (= descriptor [:stream :bytes])
-                [22]
-                (throw (ex-info "only bounded Stream Bytes is admitted"
-                                {:phase :wasm-typed-metadata :descriptor descriptor})))
       (throw (ex-info "unsupported Wasm typed descriptor"
                       {:phase :wasm-typed-metadata :descriptor descriptor}))))))
 
@@ -192,21 +186,27 @@
 
 (declare literal-table reference-type?)
 
-(defn requires-host-runtime? [kir]
-  ;; i64, f32, and f64 are native Wasm scalars. A module whose sealed
-  ;; descriptor table contains only those types must not acquire the
-  ;; externref host ABI merely because KIR v4 is used.
-  (let [signature-types (mapcat (fn [{:keys [param-types result]}]
-                                  (conj (vec param-types) result))
-                                (:functions kir))
-        ;; `descriptor-table` walks the sealed KIR map and therefore also
-        ;; observes the map's own keyword-valued metadata as `:keyword`.
-        ;; Actual guest keyword literals are independently present in the
-        ;; body-only literal table, so discard only that metadata artefact.
-        body-descriptors (disj (set (descriptor-table kir)) :keyword)]
-    (or (some reference-type? signature-types)
-        (some #(not (contains? #{:i64 :f32 :f64} %)) body-descriptors)
-        (seq (literal-table kir)))))
+(defn requires-host-runtime?
+  ([kir] (requires-host-runtime? kir {}))
+  ([kir {:keys [native-bool?]}]
+   ;; i64, f32, and f64 are native Wasm scalars. Canonical Component adapters
+   ;; may additionally opt into bool=i32; ordinary KIR v4 deliberately keeps
+   ;; bool as a sealed externref.
+   (let [native-types (cond-> #{:i64 :f32 :f64} native-bool? (conj :bool))
+         signature-types (mapcat (fn [{:keys [param-types result]}]
+                                   (conj (vec param-types) result))
+                                 (:functions kir))
+         ;; `descriptor-table` walks the sealed KIR map and therefore also
+         ;; observes the map's own keyword-valued metadata as `:keyword`.
+         ;; Actual guest keyword literals are independently present in the
+         ;; body-only literal table, so discard only that metadata artefact.
+         body-descriptors (disj (set (descriptor-table kir)) :keyword)
+         literals (if native-bool?
+                    (remove #(= :bool (first %)) (literal-table kir))
+                    (literal-table kir))]
+     (or (some #(not (contains? native-types %)) signature-types)
+         (some #(not (contains? native-types %)) body-descriptors)
+         (seq literals)))))
 
 (defn- literal-walk [form found]
   (cond
@@ -304,11 +304,13 @@
         (= op 'if) (infer-type (second args) env signatures)
         (= op 'do) (infer-type (last args) env signatures)
         (= op 'typed-cap-call) (nth args 2)
+        (= op 'component-assert-bool) :bool
         (contains? '#{+ - * quot bit-xor bit-and bit-or bit-not
                       cap-call pair pair-first pair-second
                       i32-wrap u32-wrap i32-wrapping-add i32-wrapping-mul i32-xor
                       i32-shift-left i32-shift-right u32-shift-right xorshift32
                       i64-shift-left i64-shift-right u64-shift-right
+                      i64-extend-i32-u
                       string-byte-length string-code-point-at map-get vector-count vector-get vector-f64-count
                       vector-at hetero-vector-count typed-set-count
                       typed-map-count xml-path-count xml-name-count string-index-count

@@ -286,6 +286,7 @@
     (merge {:descriptor descriptor
             :kind :option
             :item-layout item-layout
+            :cases case-layouts
             ;; Declarative obligation for a future codegen consumer, exactly
             ;; the same "documents an obligation, nothing in this repository
             ;; reads it programmatically" contract every other :validation
@@ -330,6 +331,7 @@
             :kind :result
             :ok-layout ok-layout
             :err-layout err-layout
+            :cases case-layouts
             :validation [:bounded-discriminant]}
            (structural-union-layout case-layouts))))
 

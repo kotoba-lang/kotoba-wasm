@@ -190,6 +190,12 @@
         (= op 'u32-wrap)
         (concat (emit-expr (first args) env ctx) [0xa7 0xad])
 
+        ;; Component adapters may receive a Canonical discriminant as i32
+        ;; while reusing the ordinary i64 expression emitter. This internal
+        ;; bridge widens that already-on-stack i32 without changing its bits.
+        (= op 'i64-extend-i32-u)
+        (concat (emit-expr (first args) env ctx) [0xad])
+
         (contains? '#{i32-wrapping-add i32-wrapping-mul i32-xor} op)
         (concat (emit-expr (first args) env ctx) [0xa7]
                 (emit-expr (second args) env ctx) [0xa7]
@@ -376,9 +382,17 @@
                       (f64-constant "4358002977218854975"))))))
 
 (defn- emit-typed-function-body
-  [function function-indices intrinsic-indices descriptor-indices literal-indices signatures]
+  [function function-indices intrinsic-indices descriptor-indices literal-indices signatures
+   {:keys [component-canonical-scalars? component-unchecked-bool-params]}]
   (let [locals (volatile! [])
         param-count (count (:params function))
+        wasm-type (fn [type]
+                    (if (and component-canonical-scalars? (= :bool type))
+                      0x7f
+                      (typed/wasm-type type)))
+        reference-type? (fn [type]
+                          (and (not (and component-canonical-scalars? (= :bool type)))
+                               (typed/reference-type? type)))
         allocate! (fn [wasm-type]
                     (let [index (+ param-count (count @locals))]
                       (vswap! locals conj wasm-type)
@@ -409,7 +423,9 @@
                       [0x10 (get intrinsic-indices
                                  (symbol (str "typed-get-" (scalar-suffix item-type))))]))
             (emit-bool [code]
-              (concat code [0x10 (get intrinsic-indices 'typed-bool)]))
+              (if component-canonical-scalars?
+                code
+                (concat code [0x10 (get intrinsic-indices 'typed-bool)])))
             (emit-equal [type left right env]
               (concat (i32-const (descriptor-id type))
                       (emit* left env) (emit* right env)
@@ -421,9 +437,11 @@
                           signatures)]
                 (case type
                   :i64 (concat (emit* form env) [0x50 0x45])
-                  :bool (concat (i32-const (descriptor-id :bool))
-                                (emit* form env)
-                                [0x10 (get intrinsic-indices 'typed-tag)])
+                  :bool (if component-canonical-scalars?
+                          (emit* form env)
+                          (concat (i32-const (descriptor-id :bool))
+                                  (emit* form env)
+                                  [0x10 (get intrinsic-indices 'typed-tag)]))
                   (throw (ex-info "typed Wasm condition must be bool or i64"
                                   {:phase :wasm-typed-lowering
                                    :type type :form form})))))
@@ -449,14 +467,14 @@
                     (fn emit-branches [index remaining]
                       (let [[_ binder body] (first remaining)
                             payload-type (second (nth (nth type 2) index))
-                            binder-local (allocate! (typed/wasm-type payload-type))
+                            binder-local (allocate! (wasm-type payload-type))
                             branch-env (assoc env binder {:index binder-local :type payload-type})
                             body-code (concat (emit-get type {:wasm-local value-local} index payload-type env)
                                               [::local-set binder-local] (emit* body branch-env))]
                         (if (= 1 (count remaining))
                           body-code
                           (concat [::local-get tag-local] (i32-const index) [0x46 0x04
-                                  (typed/wasm-type result-type)]
+                                  (wasm-type result-type)]
                                   body-code [0x05]
                                   (emit-branches (inc index) (rest remaining)) [0x0b]))))]
                 (concat setup (emit-branches 0 branches))))
@@ -466,6 +484,8 @@
                 #?(:clj (integer? form)
                    :cljs (or (i64/bigint-value? form) (integer? form)))
                 (into [0x42] (sleb form))
+                (and component-canonical-scalars? (boolean? form))
+                (i32-const (if form 1 0))
                 (or (string? form) (keyword? form) (boolean? form))
                 (let [literal [(cond (string? form) :string (keyword? form) :keyword :else :bool)
                                (if (keyword? form) (str form) form)]]
@@ -484,7 +504,7 @@
                                                                       [key (:type item)]) current-env))
                                                        signatures)
                                 value-code (emit* value current-env)
-                                local (allocate! (typed/wasm-type type))]
+                                local (allocate! (wasm-type type))]
                             (recur (next remaining)
                                    (assoc current-env name {:index local :type type})
                                    (concat code value-code [::local-set local])))
@@ -496,7 +516,7 @@
                                        (into {} (map (fn [[key item]] [key (:type item)]) env))
                                        signatures)]
                       (concat (emit-test test env)
-                              [0x04 (typed/wasm-type result-type)]
+                              [0x04 (wasm-type result-type)]
                               (emit* then env) [0x05] (emit* else env) [0x0b]))
                     (= op 'typed-cap-call)
                     (let [[cap-id _ _ request] args
@@ -508,6 +528,14 @@
                         (concat (emit* request env) [0x10 typed-import])
                         (concat (i32-const cap-id) (emit* request env)
                                 [0x10 (get intrinsic-indices 'typed-cap-call)])))
+                    (= op 'i64-extend-i32-u)
+                    (concat (emit* (first args) env) [0xad])
+                    (= op 'component-unreachable)
+                    [0x00]
+                    (= op 'component-assert-bool)
+                    (let [value (first args)]
+                      (concat (emit* value env) [0x41 1 0x4b 0x04 0x40 0x00 0x0b]
+                              (emit* value env)))
                     (= op 'f64-to-bits)
                     (let [value-local (allocate! 0x7c)]
                       (concat (emit* (first args) env) [::local-set value-local]
@@ -671,18 +699,18 @@
                               [0x64 0x72 0x04 0x40 0x00 0x0b]
                               (emit* (wide-log-form value) env)))
                     (contains? '#{f64-eq f64-lt f64-le f64-gt f64-ge} op)
-                    (concat (emit* (first args) env) (emit* (second args) env)
-                            [({'f64-eq 0x61 'f64-lt 0x63 'f64-gt 0x64
-                               'f64-le 0x65 'f64-ge 0x66} op)
-                             0x10 (get intrinsic-indices 'typed-bool)])
+                    (emit-bool
+                     (concat (emit* (first args) env) (emit* (second args) env)
+                             [({'f64-eq 0x61 'f64-lt 0x63 'f64-gt 0x64
+                                'f64-le 0x65 'f64-ge 0x66} op)]))
                     (= op 'f64-unordered)
                     (let [left-local (allocate! 0x7c)
                           right-local (allocate! 0x7c)]
-                      (concat (emit* (first args) env) [::local-set left-local]
-                              (emit* (second args) env) [::local-set right-local]
-                              [::local-get left-local ::local-get left-local 0x62
-                               ::local-get right-local ::local-get right-local 0x62 0x72
-                               0x10 (get intrinsic-indices 'typed-bool)]))
+                      (emit-bool
+                       (concat (emit* (first args) env) [::local-set left-local]
+                               (emit* (second args) env) [::local-set right-local]
+                               [::local-get left-local ::local-get left-local 0x62
+                                ::local-get right-local ::local-get right-local 0x62 0x72])))
                     (= op 'f32-to-bits)
                     (let [value-local (allocate! 0x7d)]
                       (concat (emit* (first args) env) [::local-set value-local]
@@ -733,18 +761,18 @@
                     (= op 'f32-sqrt)
                     (concat (emit* (first args) env) [0x91])
                     (contains? '#{f32-eq f32-lt f32-le f32-gt f32-ge} op)
-                    (concat (emit* (first args) env) (emit* (second args) env)
-                            [({'f32-eq 0x5b 'f32-lt 0x5d 'f32-gt 0x5e
-                               'f32-le 0x5f 'f32-ge 0x60} op)
-                             0x10 (get intrinsic-indices 'typed-bool)])
+                    (emit-bool
+                     (concat (emit* (first args) env) (emit* (second args) env)
+                             [({'f32-eq 0x5b 'f32-lt 0x5d 'f32-gt 0x5e
+                                'f32-le 0x5f 'f32-ge 0x60} op)]))
                     (= op 'f32-unordered)
                     (let [left-local (allocate! 0x7d)
                           right-local (allocate! 0x7d)]
-                      (concat (emit* (first args) env) [::local-set left-local]
-                              (emit* (second args) env) [::local-set right-local]
-                              [::local-get left-local ::local-get left-local 0x5c
-                               ::local-get right-local ::local-get right-local 0x5c 0x72
-                               0x10 (get intrinsic-indices 'typed-bool)]))
+                      (emit-bool
+                       (concat (emit* (first args) env) [::local-set left-local]
+                               (emit* (second args) env) [::local-set right-local]
+                               [::local-get left-local ::local-get left-local 0x5c
+                                ::local-get right-local ::local-get right-local 0x5c 0x72])))
                     (contains? '#{+ - * quot bit-xor bit-and bit-or} op)
                     (let [opcode ({'+ 0x7c '- 0x7d '* 0x7e 'quot 0x7f
                                    'bit-and 0x83 'bit-xor 0x85 'bit-or 0x84} op)]
@@ -1064,14 +1092,14 @@
                     (let [[type value none-body binder some-body] args
                           value-local (allocate! 0x6f)
                           binder-type (second type)
-                          binder-local (allocate! (typed/wasm-type binder-type))
+                          binder-local (allocate! (wasm-type binder-type))
                           result-type (typed/infer-type none-body
                                                        (into {} (map (fn [[key item]] [key (:type item)]) env))
                                                        signatures)]
                       (concat (emit* value env) [::local-set value-local]
                               (i32-const (descriptor-id type)) [::local-get value-local]
                               [0x10 (get intrinsic-indices 'typed-tag) 0x04
-                               (typed/wasm-type result-type)]
+                               (wasm-type result-type)]
                               (emit-get type {:wasm-local value-local} 0 binder-type env)
                               [::local-set binder-local]
                               (emit* some-body (assoc env binder {:index binder-local :type binder-type}))
@@ -1081,8 +1109,8 @@
                           value-local (allocate! 0x6f)
                           ok-type (second type)
                           err-type (nth type 2)
-                          ok-local (allocate! (typed/wasm-type ok-type))
-                          err-local (allocate! (typed/wasm-type err-type))
+                          ok-local (allocate! (wasm-type ok-type))
+                          err-local (allocate! (wasm-type err-type))
                           result-type (typed/infer-type ok-body
                                                        (assoc (into {} (map (fn [[key item]] [key (:type item)]) env))
                                                               ok-name ok-type)
@@ -1090,7 +1118,7 @@
                       (concat (emit* value env) [::local-set value-local]
                               (i32-const (descriptor-id type)) [::local-get value-local]
                               [0x10 (get intrinsic-indices 'typed-tag) 0x04
-                               (typed/wasm-type result-type)]
+                               (wasm-type result-type)]
                               (emit-get type {:wasm-local value-local} 0 ok-type env)
                               [::local-set ok-local]
                               (emit* ok-body (assoc env ok-name {:index ok-local :type ok-type}))
@@ -1124,7 +1152,7 @@
                       (concat (emit* value env) [::local-set value-local]
                               (i32-const (descriptor-id type)) [::local-get value-local]
                               [0x10 (get intrinsic-indices 'typed-tag)]
-                              (i32-const wanted) [0x46 0x04 (typed/wasm-type payload-type)]
+                              (i32-const wanted) [0x46 0x04 (wasm-type payload-type)]
                               (emit-get type {:wasm-local value-local} 0 payload-type env)
                               [0x05] (emit* fallback env) [0x0b]))
                     (= op 'hetero-vector-assoc)
@@ -1221,14 +1249,19 @@
       ;; declared only 5, producing `invalid local index: 5` at instantiation).
       (let [prefix (doall
                     (mapcat (fn [[index type]]
-                              (when (typed/reference-type? type)
+                              (cond
+                                (and component-canonical-scalars?
+                                     (= :bool type)
+                                     (not (contains? component-unchecked-bool-params index)))
+                                [::local-get index 0x41 1 0x4b 0x04 0x40 0x00 0x0b]
+                                (reference-type? type)
                                 (concat (i32-const (descriptor-id type)) [::local-get index]
                                         [0x10 (get intrinsic-indices 'typed-assert-ref)
                                          ::local-set index])))
                             (map-indexed vector (:param-types function))))
             body-code (doall (emit* (:body function) env))
             body-code (doall
-                       (if (typed/reference-type? (:result function))
+                       (if (reference-type? (:result function))
                          (concat (i32-const (descriptor-id (:result function))) body-code
                                  [0x10 (get intrinsic-indices 'typed-assert-ref)])
                          body-code))
@@ -1383,11 +1416,21 @@
 
 (defn emit
   ([kir target] (emit kir target {}))
-  ([kir target {:keys [component-standard32? fuel memory-pages capability-imports]}]
+  ([kir target {:keys [component-standard32? fuel memory-pages capability-imports
+                       core-param-types component-canonical-scalars?]
+                :as opts}]
   (let [fuel-initial (fuel-budget! fuel)
         memory-maximum (component-memory-budget! memory-pages)
         functions (:functions kir)
         typed? (= :kotoba.kir/v4 (:format kir))
+        emitted-wasm-type (fn [type]
+                            (if (and component-canonical-scalars? (= :bool type))
+                              0x7f
+                              (typed/wasm-type type)))
+        _ (when (and component-canonical-scalars?
+                     (typed/requires-host-runtime? kir {:native-bool? true}))
+            (throw (ex-info "canonical scalar Component adapter requires a host value"
+                            {:phase :wasm-component-scalar-lowering})))
         exported-names (set (or (:exports kir) (map :name functions)))
         exported-functions (filterv #(contains? exported-names (:name %)) functions)
         ;; Effects describe authority requirements, but imports must be
@@ -1438,7 +1481,9 @@
                                           document-i64-value document-f64-value})
         has-keyword-from-string? (uses-operation? functions '#{keyword-from-string})
         has-symbol-from-string? (uses-operation? functions '#{symbol})
-        typed-imports (when (and typed? (typed/requires-host-runtime? kir))
+        typed-imports (when (and typed?
+                                 (not component-canonical-scalars?)
+                                 (typed/requires-host-runtime? kir))
                         (vec (concat
                          [['typed-literal "kotoba:typed" "literal" [0x60 1 0x7f 1 0x6f]]
                          ['typed-new "kotoba:typed" "new" [0x60 2 0x7f 0x7f 1 0x6f]]
@@ -1580,13 +1625,26 @@
         component-types (when component-standard32?
                           (concat
                            (mapcat (fn [{:keys [result]}]
-                                     [0x60 1 (typed/wasm-type result) 0])
+                                     [0x60 1 (emitted-wasm-type result) 0])
                                    exported-functions)
                            [0x60 4 0x7f 0x7f 0x7f 0x7f 1 0x7f]
                            [0x60 0 0]))
+        function-types
+        (mapcat (fn [function]
+                  (if-let [params (get core-param-types (:name function))]
+                    (concat [0x60] (uleb (count params)) params
+                            [1 (emitted-wasm-type (:result function))])
+                    (if typed?
+                      (if component-canonical-scalars?
+                        (concat [0x60] (uleb (count (:param-types function)))
+                                (map emitted-wasm-type (:param-types function))
+                                [1 (emitted-wasm-type (:result function))])
+                        (typed-function-type function))
+                      (function-type function))))
+                functions)
         types (concat (uleb (+ (count functions) shift component-type-count))
                       (mapcat #(nth % 3) imports)
-                      (mapcat (if typed? typed-function-type function-type) functions)
+                      function-types
                       component-types)
         import-sec (when (seq imports)
                      (concat (uleb shift)
@@ -1657,7 +1715,8 @@
                   (uleb (+ (count functions) component-function-count))
                   (mapcat #(if typed?
                              (emit-typed-function-body % indices intrinsic-indices
-                                                       descriptor-indices literal-indices signatures)
+                                                       descriptor-indices literal-indices signatures
+                                                       opts)
                              (function-body % indices intrinsic-indices))
                           functions)
                   (when component-standard32?
