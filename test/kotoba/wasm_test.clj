@@ -203,3 +203,60 @@
         (is (not (zero? (:exit out-of-memory)))))
       (finally
         (Files/deleteIfExists path)))))
+
+(deftest component-list-at-validates-before-loading-i64-or-f64
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['at-i64 'at-f64]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'at-i64
+               :params ['pointer 'count 'index]
+               :param-types [:bool :bool :i64]
+               :result :i64
+               :body '(component-list-at-i64 pointer count index 16 8 8)}
+              {:name 'at-f64
+               :params ['pointer 'count 'index]
+               :param-types [:bool :bool :i64]
+               :result :f64
+               :body '(component-list-at-f64 pointer count index 16 8 8)}]}
+        bytes (wasm/emit-component-core
+               kir :wasm32-wasi-kotoba-v1
+               {:component-canonical-scalars? true
+                :component-unchecked-bool-params
+                {'at-i64 #{0 1} 'at-f64 #{0 1}}
+                :core-param-types
+                {'at-i64 [0x7f 0x7f 0x7e]
+                 'at-f64 [0x7f 0x7f 0x7e]}})
+        path (Files/createTempFile
+              "kotoba-wasm-component-list-at-" ".wasm"
+              (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [i64-valid (shell/sh "wasmtime" "run" "--invoke" "cm32p2||at-i64"
+                                (str path) "8" "2" "1")
+            f64-valid (shell/sh "wasmtime" "run" "--invoke" "cm32p2||at-f64"
+                                (str path) "8" "2" "1")
+            negative-index
+            (shell/sh "wasmtime" "run" "--invoke" "cm32p2||at-i64"
+                      (str path) "8" "2" "-1")
+            equal-index
+            (shell/sh "wasmtime" "run" "--invoke" "cm32p2||at-i64"
+                      (str path) "8" "2" "2")
+            over-bound
+            (shell/sh "wasmtime" "run" "--invoke" "cm32p2||at-i64"
+                      (str path) "8" "17" "0")
+            unaligned
+            (shell/sh "wasmtime" "run" "--invoke" "cm32p2||at-i64"
+                      (str path) "1" "1" "0")
+            wrapped
+            (shell/sh "wasmtime" "run" "--invoke" "cm32p2||at-i64"
+                      (str path) "-8" "2" "0")]
+        (is (zero? (:exit i64-valid)) (:err i64-valid))
+        (is (= "0" (str/trim (:out i64-valid))))
+        (is (zero? (:exit f64-valid)) (:err f64-valid))
+        (is (= "0" (str/trim (:out f64-valid))))
+        (doseq [run [negative-index equal-index over-bound unaligned wrapped]]
+          (is (not (zero? (:exit run))))))
+      (finally
+        (Files/deleteIfExists path)))))

@@ -21,6 +21,9 @@ that single checked layout instead of reimplementing vector ABI rules.
 Selected indirect list leaves use the shared `component-list-count` lowering,
 which checks alignment, the descriptor item bound, unsigned byte-size/range
 overflow, and the module's actual linear-memory size before exposing a count.
+The matching `component-list-at-i64`/`component-list-at-f64` lowerings reuse
+that exact validation, reject an unsigned out-of-range index, and only then
+load one aligned scalar item from the borrowed Canonical buffer.
 
 ## Does not own
 
