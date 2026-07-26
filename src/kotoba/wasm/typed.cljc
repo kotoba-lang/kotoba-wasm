@@ -6,6 +6,7 @@
 (def compact-graph-abi-version 10)
 (def document-abi-version 11)
 (def symbol-abi-version 12)
+(def list-abi-version 13)
 (def custom-section-name "kotoba.typed")
 
 (def ^:private primitive-tags
@@ -30,7 +31,7 @@
            (or (contains? primitive-tags value)
                (contains? scalar-adt-aliases value)))
       (and (vector? value)
-           (contains? #{:option :result :variant :vector :set :map :record :ref}
+           (contains? #{:option :result :variant :vector :set :map :record :ref :list}
                       (first value)))))
 
 (defn- uleb [n]
@@ -75,6 +76,7 @@
       :vector (into [7] (concat (uleb (count (second descriptor)))
                                 (mapcat encode-descriptor (second descriptor))))
       :set (into [8] (encode-descriptor (second descriptor)))
+      :list (into [20] (encode-descriptor (second descriptor)))
       :map (into [10] (concat (encode-descriptor (second descriptor))
                               (encode-descriptor (nth descriptor 2))))
       :record (into [9] (concat (text-bytes (keyword-text (second descriptor)))
@@ -95,6 +97,7 @@
           :variant (reduce (fn [result [_ type]] (walk type result)) found (nth value 2))
           :vector (reduce (fn [result type] (walk type result)) found (second value))
           :set (walk (second value) found)
+          :list (walk (second value) found)
           :map (->> found (walk (second value)) (walk (nth value 2)))
           :record (reduce (fn [result [_ type]] (walk type result)) found (nth value 2))
           :ref found
@@ -264,11 +267,13 @@
         contracts (capability-contracts kir)
         document? (some #{:document} descriptors)
         symbol? (some #{:symbol} descriptors)
+        list? (some #(and (vector? %) (= :list (first %))) descriptors)
         compact-graph? (some #{:string-index :disjoint-set-i64} descriptors)
         schema? (or (seq schemas) (seq contracts))
-        extended-schema? (or schema? compact-graph? document? symbol?)
+        extended-schema? (or schema? compact-graph? document? symbol? list?)
         indices (descriptor-indices kir)]
-    (vec (concat [(cond symbol? symbol-abi-version
+    (vec (concat [(cond list? list-abi-version
+                        symbol? symbol-abi-version
                         document? document-abi-version
                         compact-graph? compact-graph-abi-version
                         schema? schema-abi-version

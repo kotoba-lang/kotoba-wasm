@@ -17,6 +17,22 @@
   (is (some? (find-ns 'kotoba.wasm.canonical-abi)) "kotoba.wasm.canonical-abi must load")
   (is (some? (find-ns 'kotoba.wasm.tools)) "kotoba.wasm.tools must load"))
 
+(deftest bounded-list-descriptors-use-the-versioned-recursive-metadata-tag
+  (let [descriptor [:list [:ref :demo/item]]
+        schema [:record :demo/item [[:x :i64] [:enabled :bool]]]
+        kir {:format :kotoba.kir/v4
+             :exports ['echo]
+             :schemas {:demo/item schema}
+             :schema-identities
+             {:demo/item
+              "0000000000000000000000000000000000000000000000000000000000000000"}
+             :effects #{}
+             :functions
+             [{:name 'echo :params ['items] :param-types [descriptor]
+               :result descriptor :effects #{} :body 'items}]}]
+    (is (= [20 3] (typed/encode-descriptor [:list :bool])))
+    (is (= typed/list-abi-version (first (typed/metadata-bytes kir))))))
+
 (deftest canonical-bool-validation-exclusions-are-function-scoped
   (let [kir {:format :kotoba.kir/v4
              :exports ['joined 'ordinary]
