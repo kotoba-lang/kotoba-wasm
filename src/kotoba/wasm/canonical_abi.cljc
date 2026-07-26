@@ -408,6 +408,12 @@
                             :max-bytes value/symbol-value-byte-limit
                             :validation [:checked-pointer-range :valid-utf8
                                          :valid-symbol-source]}
+    (= descriptor :vector-i64)
+    (assoc (list-layout [:list :i64] schemas visited)
+           :descriptor :vector-i64)
+    (= descriptor :vector-f64)
+    (assoc (list-layout [:list :f64] schemas visited)
+           :descriptor :vector-f64)
     (and (vector? descriptor) (= :ref (first descriptor)))
     (let [schema (get schemas (second descriptor))]
       (if (and (vector? schema) (= :variant (first schema)))

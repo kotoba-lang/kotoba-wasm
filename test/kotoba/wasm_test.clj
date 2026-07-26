@@ -4,7 +4,7 @@
             [clojure.test :refer [deftest is]]
             [kotoba.wasm.core :as wasm]
             [kotoba.wasm.typed]
-            [kotoba.wasm.canonical-abi]
+            [kotoba.wasm.canonical-abi :as canonical]
             [kotoba.wasm.tools])
   (:import [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]))
@@ -44,3 +44,20 @@
             "an exclusion for one function must not disable another function"))
       (finally
         (Files/deleteIfExists path)))))
+
+(deftest public-vector-descriptors-share-the-canonical-list-layout
+  (doseq [[public item] [[:vector-i64 :i64]
+                         [:vector-f64 :f64]]]
+    (let [public-layout (canonical/layout public)
+          internal-layout (canonical/layout [:list item])]
+      (is (= (dissoc internal-layout :descriptor)
+             (dissoc public-layout :descriptor)))
+      (is (= public (:descriptor public-layout)))
+      (is (= [:i32 :i32] (:flat public-layout)))
+      (is (= item (get-in public-layout [:item-layout :descriptor])))
+      (is (pos-int? (:max-items public-layout)))))
+  (let [layout (canonical/layout [:option :vector-i64])]
+    (is (= :option (:kind layout)))
+    (is (= [:i32 :i32 :i32] (:flat layout)))
+    (is (= :vector-i64
+           (get-in layout [:cases 1 :layout :descriptor])))))
