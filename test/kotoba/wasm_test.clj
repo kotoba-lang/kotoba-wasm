@@ -200,6 +200,13 @@
                         7 2 pointer count 16 8 8 16 8))
             :wasm32-wasi-kotoba-v1 opts)))
       (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"result layout is invalid"
+           (wasm/emit-component-core
+            (assoc-in kir [:functions 0 :body]
+                      '(component-result-list-capability-count
+                        7 0 pointer count 16 1 1 16 8 3))
+            :wasm32-wasi-kotoba-v1 opts)))
+      (is (thrown-with-msg?
            clojure.lang.ExceptionInfo #"requires a named import"
            (wasm/emit-component-core
             kir :wasm32-wasi-kotoba-v1
