@@ -18,6 +18,9 @@ The Canonical ABI owner also normalizes Kotoba's public `:vector-i64` and
 `:vector-f64` descriptors to the standard Component Model `list<s64>` and
 `list<f64>` pointer/length layouts. Hosts and component producers consume
 that single checked layout instead of reimplementing vector ABI rules.
+Selected indirect list leaves use the shared `component-list-count` lowering,
+which checks alignment, the descriptor item bound, unsigned byte-size/range
+overflow, and the module's actual linear-memory size before exposing a count.
 
 ## Does not own
 

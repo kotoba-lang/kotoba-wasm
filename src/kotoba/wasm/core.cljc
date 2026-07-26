@@ -576,6 +576,54 @@
                        [::local-get end-local 0x3f 0x00
                         0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b
                         ::local-get length-local 0xad]))
+                    (= op 'component-list-count)
+                    (let [[pointer count max-items stride alignment] args
+                          pointer-local (allocate! 0x7f)
+                          count-local (allocate! 0x7f)
+                          bytes-local (allocate! 0x7f)
+                          end-local (allocate! 0x7f)]
+                      (when-not (and (integer? max-items)
+                                     (<= 0 max-items 0x7fffffff)
+                                     (integer? stride)
+                                     (<= 1 stride 0x7fffffff)
+                                     (<= (* max-items stride) 0xffffffff)
+                                     (integer? alignment)
+                                     (pos? alignment)
+                                     (zero? (bit-and alignment (dec alignment)))
+                                     (<= alignment 0x40000000))
+                        (throw
+                         (ex-info "component list layout is invalid"
+                                  {:phase :wasm-component-list-lowering
+                                   :max-items max-items
+                                   :stride stride
+                                   :alignment alignment})))
+                      (concat
+                       (emit* pointer env) [::local-set pointer-local]
+                       (emit* count env) [::local-set count-local]
+                       ;; Canonical list pointers are aligned even when the
+                       ;; selected list is empty.
+                       [::local-get pointer-local 0x41] (sleb (dec alignment))
+                       [0x71 0x45 0x04 0x40 0x05 0x00 0x0b]
+                       ;; The item count is unsigned and descriptor-bounded.
+                       [::local-get count-local 0x41] (sleb max-items)
+                       [0x4b 0x04 0x40 0x00 0x0b]
+                       ;; bytes = count * stride.  Reject unsigned multiply
+                       ;; overflow independently of the configured bound.
+                       [::local-get count-local 0x41] (sleb stride)
+                       [0x6c ::local-set bytes-local
+                        ::local-get count-local 0x45 0x04 0x40 0x05
+                        ::local-get bytes-local 0x41] (sleb stride)
+                       [0x6e ::local-get count-local 0x47
+                        0x04 0x40 0x00 0x0b 0x0b]
+                       ;; end = ptr + bytes, rejecting unsigned wrap and a
+                       ;; range beyond this module's actual linear memory.
+                       [::local-get pointer-local ::local-get bytes-local
+                        0x6a ::local-set end-local
+                        ::local-get end-local ::local-get pointer-local
+                        0x49 0x04 0x40 0x00 0x0b
+                        ::local-get end-local 0x3f 0x00
+                        0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b
+                        ::local-get count-local 0xad]))
                     (= op 'f64-to-bits)
                     (let [value-local (allocate! 0x7c)]
                       (concat (emit* (first args) env) [::local-set value-local]
