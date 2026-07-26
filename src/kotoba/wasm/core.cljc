@@ -654,6 +654,112 @@
                  [::local-set result-count-local]
                  (:code result-list)
                  [::local-get (:count-local result-list) 0xad])))
+            (emit-option-record-capability-project [op args env]
+              (let [[cap-id request-values fallback result-size result-alignment
+                     payload-offset bool-offsets field-offset] args
+                    field-type
+                    ({'component-option-record-capability-project-i64 :i64
+                      'component-option-record-capability-project-f32 :f32
+                      'component-option-record-capability-project-f64 :f64
+                      'component-option-record-capability-project-bool :bool}
+                     op)
+                    typed-import (get intrinsic-indices [:capability cap-id])
+                    realloc-index (get intrinsic-indices :component-realloc)
+                    _ (when-not (and (vector? request-values)
+                                     (seq request-values))
+                        (throw
+                         (ex-info "component record request must have flat values"
+                                  {:phase :wasm-component-record-capability-lowering})))
+                    _ (when-not typed-import
+                        (throw
+                         (ex-info
+                          "component aggregate capability requires a named import"
+                          {:phase :wasm-component-record-capability-lowering
+                           :capability cap-id})))
+                    _ (when-not realloc-index
+                        (throw
+                         (ex-info
+                          "component aggregate capability requires canonical realloc"
+                          {:phase :wasm-component-record-capability-lowering})))
+                    _ (when-not
+                       (and (integer? result-size) (pos? result-size)
+                            (integer? result-alignment)
+                            (contains? #{1 2 4 8} result-alignment)
+                            (integer? payload-offset) (<= 0 payload-offset)
+                            (vector? bool-offsets)
+                            (every? #(and (integer? %) (<= 0 %)
+                                          (< % result-size))
+                                    bool-offsets)
+                            (integer? field-offset) (<= 0 field-offset)
+                            (contains? #{:i64 :f32 :f64 :bool} field-type))
+                        (throw
+                         (ex-info
+                          "component record result layout is invalid"
+                          {:phase :wasm-component-record-capability-lowering
+                           :result-size result-size
+                           :result-alignment result-alignment
+                           :payload-offset payload-offset
+                           :bool-offsets bool-offsets
+                           :field-offset field-offset
+                           :field-type field-type})))
+                    field-width ({:i64 8 :f64 8 :f32 4 :bool 1} field-type)
+                    _ (when (> (+ field-offset field-width) result-size)
+                        (throw
+                         (ex-info
+                          "component record projected field exceeds result area"
+                          {:phase :wasm-component-record-capability-lowering
+                           :field-offset field-offset :field-width field-width
+                           :result-size result-size})))
+                    result-local (allocate! 0x7f)
+                    result-end-local (allocate! 0x7f)
+                    disc-local (allocate! 0x7f)
+                    load-field
+                    (case field-type
+                      :i64 (concat [::local-get result-local 0x29 0x03]
+                                   (uleb field-offset))
+                      :f64 (concat [::local-get result-local 0x2b 0x03]
+                                   (uleb field-offset))
+                      :f32 (concat [::local-get result-local 0x2a 0x02]
+                                   (uleb field-offset))
+                      :bool (concat [::local-get result-local 0x2d 0x00]
+                                    (uleb field-offset)))]
+                (concat
+                 (i32-const 0) (i32-const 0)
+                 (i32-const result-alignment) (i32-const result-size)
+                 [0x10 realloc-index ::local-set result-local]
+                 ;; option some + the record's already-decoded flat fields.
+                 (i32-const 1)
+                 (mapcat #(emit* % env) request-values)
+                 [::local-get result-local 0x10 typed-import]
+                 [::local-get result-local 0x41] (sleb (dec result-alignment))
+                 [0x71 0x45 0x04 0x40 0x05 0x00 0x0b
+                  ::local-get result-local 0x41] (sleb result-size)
+                 [0x6a ::local-set result-end-local
+                  ::local-get result-end-local ::local-get result-local
+                  0x49 0x04 0x40 0x00 0x0b
+                  ::local-get result-end-local 0x3f 0x00
+                  0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b
+                  ::local-get result-local 0x2d 0x00 0x00
+                  ::local-set disc-local
+                  ::local-get disc-local 0x41 1 0x4b
+                  0x04 0x40 0x00 0x0b
+                  ::local-get disc-local
+                  0x04] [({:i64 0x7e :f64 0x7c :f32 0x7d :bool 0x7f}
+                          field-type)]
+                 ;; Validate every active bool leaf, even if not projected.
+                 (mapcat (fn [offset]
+                           (concat [::local-get result-local 0x2d 0x00]
+                                   (uleb offset)
+                                   [0x41 1 0x4b 0x04 0x40 0x00 0x0b]))
+                         bool-offsets)
+                 load-field
+                 (when (= :bool field-type)
+                   [0x22 disc-local 0x41 1 0x4b
+                    0x04 0x40 0x00 0x0b
+                    ::local-get disc-local])
+                 [0x05]
+                 (emit* fallback env)
+                 [0x0b])))
             (emit-component-list-get [op args env]
               (let [[pointer count index fallback
                      max-items stride alignment] args
@@ -765,6 +871,13 @@
                     (emit-option-list-capability-count args env)
                     (= op 'component-result-list-capability-count)
                     (emit-result-list-capability-count args env)
+                    (contains?
+                     '#{component-option-record-capability-project-i64
+                        component-option-record-capability-project-f32
+                        component-option-record-capability-project-f64
+                        component-option-record-capability-project-bool}
+                     op)
+                    (emit-option-record-capability-project op args env)
                     (= op 'i64-extend-i32-u)
                     (concat (emit* (first args) env) [0xad])
                     (= op 'component-unreachable)
