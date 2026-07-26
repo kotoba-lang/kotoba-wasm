@@ -501,7 +501,8 @@
                    0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b])}))
             (emit-option-list-capability-count [args env]
               (let [[cap-id pointer count fallback max-items stride alignment
-                     result-size payload-offset] args
+                     result-size payload-offset requested-result-alignment] args
+                    result-alignment (or requested-result-alignment alignment)
                     typed-import (get intrinsic-indices [:capability cap-id])
                     realloc-index (get intrinsic-indices :component-realloc)
                     _ (when-not typed-import
@@ -519,7 +520,9 @@
                        (and (integer? result-size) (pos? result-size)
                             (<= result-size 0x7fffffff)
                             (integer? payload-offset) (<= 0 payload-offset)
-                            (<= (+ payload-offset 8) result-size))
+                            (<= (+ payload-offset 8) result-size)
+                            (integer? result-alignment)
+                            (contains? #{1 2 4 8} result-alignment))
                         (throw
                          (ex-info
                           "component aggregate capability result layout is invalid"
@@ -541,14 +544,14 @@
                 (concat
                  (:code request)
                  (i32-const 0) (i32-const 0)
-                 (i32-const alignment) (i32-const result-size)
+                 (i32-const result-alignment) (i32-const result-size)
                  [0x10 realloc-index ::local-set result-local]
                  (i32-const 1)
                  [::local-get (:pointer-local request)
                   ::local-get (:count-local request)
                   ::local-get result-local
                   0x10 typed-import]
-                 [::local-get result-local 0x41] (sleb (dec alignment))
+                 [::local-get result-local 0x41] (sleb (dec result-alignment))
                  [0x71 0x45 0x04 0x40 0x05 0x00 0x0b
                   ::local-get result-local 0x41] (sleb result-size)
                  [0x6a ::local-set result-end-local
@@ -575,7 +578,8 @@
                  [0x0b])))
             (emit-result-list-capability-count [args env]
               (let [[cap-id request-disc pointer count max-items stride alignment
-                     result-size payload-offset] args
+                     result-size payload-offset requested-result-alignment] args
+                    result-alignment (or requested-result-alignment alignment)
                     typed-import (get intrinsic-indices [:capability cap-id])
                     realloc-index (get intrinsic-indices :component-realloc)
                     _ (when-not (contains? #{0 1} request-disc)
@@ -599,7 +603,9 @@
                        (and (integer? result-size) (pos? result-size)
                             (<= result-size 0x7fffffff)
                             (integer? payload-offset) (<= 0 payload-offset)
-                            (<= (+ payload-offset 8) result-size))
+                            (<= (+ payload-offset 8) result-size)
+                            (integer? result-alignment)
+                            (contains? #{1 2 4 8} result-alignment))
                         (throw
                          (ex-info
                           "component aggregate capability result layout is invalid"
@@ -621,14 +627,14 @@
                 (concat
                  (:code request)
                  (i32-const 0) (i32-const 0)
-                 (i32-const alignment) (i32-const result-size)
+                 (i32-const result-alignment) (i32-const result-size)
                  [0x10 realloc-index ::local-set result-local]
                  (i32-const request-disc)
                  [::local-get (:pointer-local request)
                   ::local-get (:count-local request)
                   ::local-get result-local
                   0x10 typed-import]
-                 [::local-get result-local 0x41] (sleb (dec alignment))
+                 [::local-get result-local 0x41] (sleb (dec result-alignment))
                  [0x71 0x45 0x04 0x40 0x05 0x00 0x0b
                   ::local-get result-local 0x41] (sleb result-size)
                  [0x6a ::local-set result-end-local
