@@ -1439,6 +1439,16 @@
                             (if (and component-canonical-scalars? (= :bool type))
                               0x7f
                               (typed/wasm-type type)))
+        has-cap? (uses-operation? functions '#{cap-call})
+        has-typed-cap? (uses-operation? functions '#{typed-cap-call})
+        _named-capability
+        (when (and component-canonical-scalars?
+                   has-typed-cap?
+                   (empty? capability-imports))
+          (throw
+           (ex-info
+            "canonical scalar Component capability requires a named import"
+            {:phase :wasm-component-scalar-lowering})))
         _ (when (and component-canonical-scalars?
                      (typed/requires-host-runtime? kir {:native-bool? true}))
             (throw (ex-info "canonical scalar Component adapter requires a host value"
@@ -1450,8 +1460,6 @@
         ;; the original :cap/call effect while replacing the generic operation
         ;; with a named typed-cap-call; deriving this from effects would then
         ;; reintroduce an ambient, unbindable generic import.
-        has-cap? (uses-operation? functions '#{cap-call})
-        has-typed-cap? (uses-operation? functions '#{typed-cap-call})
         heap-ops (let [found (volatile! #{})]
                    (letfn [(walk [form]
                              (cond
