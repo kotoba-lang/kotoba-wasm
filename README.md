@@ -24,6 +24,9 @@ overflow, and the module's actual linear-memory size before exposing a count.
 The matching `component-list-at-i64`/`component-list-at-f64` lowerings reuse
 that exact validation, reject an unsigned out-of-range index, and only then
 load one aligned scalar item from the borrowed Canonical buffer.
+The `component-list-get-*` forms preserve those list checks but choose a
+caller-supplied fallback for a negative or out-of-range index without
+addressing memory.
 
 ## Does not own
 

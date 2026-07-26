@@ -260,3 +260,55 @@
           (is (not (zero? (:exit run))))))
       (finally
         (Files/deleteIfExists path)))))
+
+(deftest component-list-get-validates-the-list-before-index-fallback
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['get-i64 'get-f64]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'get-i64
+               :params ['pointer 'count 'index 'fallback]
+               :param-types [:bool :bool :i64 :i64]
+               :result :i64
+               :body '(component-list-get-i64
+                        pointer count index fallback 16 8 8)}
+              {:name 'get-f64
+               :params ['pointer 'count 'index 'fallback]
+               :param-types [:bool :bool :i64 :f64]
+               :result :f64
+               :body '(component-list-get-f64
+                        pointer count index fallback 16 8 8)}]}
+        bytes (wasm/emit-component-core
+               kir :wasm32-wasi-kotoba-v1
+               {:component-canonical-scalars? true
+                :component-unchecked-bool-params
+                {'get-i64 #{0 1} 'get-f64 #{0 1}}
+                :core-param-types
+                {'get-i64 [0x7f 0x7f 0x7e 0x7e]
+                 'get-f64 [0x7f 0x7f 0x7e 0x7c]}})
+        path (Files/createTempFile
+              "kotoba-wasm-component-list-get-" ".wasm"
+              (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [present (shell/sh "wasmtime" "run" "--invoke" "cm32p2||get-i64"
+                              (str path) "8" "2" "1" "77")
+            negative (shell/sh "wasmtime" "run" "--invoke" "cm32p2||get-i64"
+                               (str path) "8" "2" "-1" "77")
+            equal (shell/sh "wasmtime" "run" "--invoke" "cm32p2||get-i64"
+                            (str path) "8" "2" "2" "77")
+            f64-fallback
+            (shell/sh "wasmtime" "run" "--invoke" "cm32p2||get-f64"
+                      (str path) "8" "2" "2" "3.5")
+            malformed-list-still-traps
+            (shell/sh "wasmtime" "run" "--invoke" "cm32p2||get-i64"
+                      (str path) "1" "2" "9" "77")]
+        (is (zero? (:exit present)) (:err present))
+        (is (= "0" (str/trim (:out present))))
+        (is (= "77" (str/trim (:out negative))))
+        (is (= "77" (str/trim (:out equal))))
+        (is (= "3.5" (str/trim (:out f64-fallback))))
+        (is (not (zero? (:exit malformed-list-still-traps)))))
+      (finally
+        (Files/deleteIfExists path)))))
