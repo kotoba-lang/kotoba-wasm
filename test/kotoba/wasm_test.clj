@@ -161,6 +161,52 @@
       (finally
         (Files/deleteIfExists path)))))
 
+(deftest component-result-list-capability-count-has-a-flat-named-import
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['call]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'call
+               :params ['pointer 'count]
+               :param-types [:bool :bool]
+               :result :i64
+               :body '(component-result-list-capability-count
+                        7 0 pointer count 16 8 8 16 8)}]}
+        opts {:component-canonical-scalars? true
+              :component-unchecked-bool-params {'call #{0 1}}
+              :core-param-types {'call [0x7f 0x7f]}
+              ;; result<list<s64>, list<s64>> has the same flat standard32
+              ;; import shape as option<list<s64>>.
+              :capability-imports
+              [{:id 7
+                :module "cm32p2|kotoba:application/clock@1"
+                :field "now"
+                :type [0x60 4 0x7f 0x7f 0x7f 0x7f 0]}]}
+        bytes (wasm/emit-component-core
+               kir :wasm32-wasi-kotoba-v1 opts)
+        path (Files/createTempFile
+              "kotoba-wasm-component-result-list-capability-" ".wasm"
+              (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))]
+        (is (zero? (:exit validated)) (:err validated)))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"request case is invalid"
+           (wasm/emit-component-core
+            (assoc-in kir [:functions 0 :body]
+                      '(component-result-list-capability-count
+                        7 2 pointer count 16 8 8 16 8))
+            :wasm32-wasi-kotoba-v1 opts)))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"requires a named import"
+           (wasm/emit-component-core
+            kir :wasm32-wasi-kotoba-v1
+            (dissoc opts :capability-imports))))
+      (finally
+        (Files/deleteIfExists path)))))
+
 (deftest component-string-length-validates-the-selected-flat-range
   (let [kir {:format :kotoba.kir/v4
              :exports ['length]
