@@ -162,3 +162,44 @@
         (is (not (zero? (:exit out-of-memory)))))
       (finally
         (Files/deleteIfExists path)))))
+
+(deftest component-list-count-validates-the-selected-flat-range
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['count-items]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'count-items
+               :params ['pointer 'count]
+               :param-types [:bool :bool]
+               :result :i64
+               :body '(component-list-count pointer count 16 8 8)}]}
+        bytes (wasm/emit-component-core
+               kir :wasm32-wasi-kotoba-v1
+               {:component-canonical-scalars? true
+                :component-unchecked-bool-params {'count-items #{0 1}}
+                :core-param-types {'count-items [0x7f 0x7f]}})
+        path (Files/createTempFile
+              "kotoba-wasm-component-list-count-" ".wasm"
+              (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [valid (shell/sh "wasmtime" "run" "--invoke" "cm32p2||count-items"
+                            (str path) "8" "16")
+            over-bound (shell/sh "wasmtime" "run" "--invoke" "cm32p2||count-items"
+                                 (str path) "8" "17")
+            unaligned (shell/sh "wasmtime" "run" "--invoke" "cm32p2||count-items"
+                                (str path) "1" "1")
+            wrapped (shell/sh "wasmtime" "run" "--invoke" "cm32p2||count-items"
+                              (str path) "-8" "2")
+            out-of-memory
+            (shell/sh "wasmtime" "run" "--invoke" "cm32p2||count-items"
+                      (str path) "16777208" "2")]
+        (is (zero? (:exit valid)) (:err valid))
+        (is (= "16" (str/trim (:out valid))))
+        (is (not (zero? (:exit over-bound))))
+        (is (not (zero? (:exit unaligned))))
+        (is (not (zero? (:exit wrapped))))
+        (is (not (zero? (:exit out-of-memory)))))
+      (finally
+        (Files/deleteIfExists path)))))
