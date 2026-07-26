@@ -548,6 +548,34 @@
                     (concat (emit* (first args) env) [0xa7 0xbe])
                     (= op 'component-i64-to-f64)
                     (concat (emit* (first args) env) [0xbf])
+                    (= op 'component-string-byte-length)
+                    (let [[pointer length max-bytes] args
+                          pointer-local (allocate! 0x7f)
+                          length-local (allocate! 0x7f)
+                          end-local (allocate! 0x7f)]
+                      (when-not (and (integer? max-bytes)
+                                     (<= 0 max-bytes 0x7fffffff))
+                        (throw
+                         (ex-info "component string byte bound is invalid"
+                                  {:phase :wasm-component-scalar-lowering
+                                   :max-bytes max-bytes})))
+                      (concat
+                       (emit* pointer env) [::local-set pointer-local]
+                       (emit* length env) [::local-set length-local]
+                       ;; The selected string must respect its descriptor's
+                       ;; byte bound.
+                       [::local-get length-local 0x41] (sleb max-bytes)
+                       [0x4b 0x04 0x40 0x00 0x0b]
+                       ;; end = ptr + len, rejecting unsigned wrap.
+                       [::local-get pointer-local ::local-get length-local
+                        0x6a ::local-set end-local
+                        ::local-get end-local ::local-get pointer-local
+                        0x49 0x04 0x40 0x00 0x0b]
+                       ;; Validate against the module's actual memory, not a
+                       ;; duplicated compile-time page assumption.
+                       [::local-get end-local 0x3f 0x00
+                        0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b
+                        ::local-get length-local 0xad]))
                     (= op 'f64-to-bits)
                     (let [value-local (allocate! 0x7c)]
                       (concat (emit* (first args) env) [::local-set value-local]

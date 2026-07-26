@@ -122,3 +122,43 @@
           kir :wasm32-wasi-kotoba-v1
           {:component-canonical-scalars? true}))
         "canonical adapters cannot fall back to the generic ambient ABI")))
+
+(deftest component-string-length-validates-the-selected-flat-range
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['length]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'length
+               :params ['pointer 'length]
+               ;; Canonical bool uses core i32; these generated adapter
+               ;; parameters are explicitly excluded from bool validation.
+               :param-types [:bool :bool]
+               :result :i64
+               :body '(component-string-byte-length pointer length 16)}]}
+        bytes (wasm/emit-component-core
+               kir :wasm32-wasi-kotoba-v1
+               {:component-canonical-scalars? true
+                :component-unchecked-bool-params {'length #{0 1}}
+                :core-param-types {'length [0x7f 0x7f]}})
+        path (Files/createTempFile
+              "kotoba-wasm-component-string-length-" ".wasm"
+              (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [valid (shell/sh "wasmtime" "run" "--invoke" "cm32p2||length"
+                            (str path) "0" "16")
+            over-bound (shell/sh "wasmtime" "run" "--invoke" "cm32p2||length"
+                                 (str path) "0" "17")
+            wrapped (shell/sh "wasmtime" "run" "--invoke" "cm32p2||length"
+                              (str path) "-1" "2")
+            out-of-memory
+            (shell/sh "wasmtime" "run" "--invoke" "cm32p2||length"
+                      (str path) "16777215" "2")]
+        (is (zero? (:exit valid)) (:err valid))
+        (is (= "16" (str/trim (:out valid))))
+        (is (not (zero? (:exit over-bound))))
+        (is (not (zero? (:exit wrapped))))
+        (is (not (zero? (:exit out-of-memory)))))
+      (finally
+        (Files/deleteIfExists path)))))
