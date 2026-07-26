@@ -31,8 +31,9 @@
            (or (contains? primitive-tags value)
                (contains? scalar-adt-aliases value)))
       (and (vector? value)
-           (contains? #{:option :result :variant :vector :set :map :record :ref :list}
-                      (first value)))))
+           (or (= :list (first value))
+               (contains? #{:option :result :variant :vector :set :map :record :ref}
+                          (first value))))))
 
 (defn- uleb [n]
   (loop [n n out []]
@@ -265,10 +266,11 @@
         schemas (:schemas kir)
         identities (:schema-identities kir)
         contracts (capability-contracts kir)
-        document? (some #{:document} descriptors)
-        symbol? (some #{:symbol} descriptors)
+        document? (some #(= :document %) descriptors)
+        symbol? (some #(= :symbol %) descriptors)
         list? (some #(and (vector? %) (= :list (first %))) descriptors)
-        compact-graph? (some #{:string-index :disjoint-set-i64} descriptors)
+        compact-graph?
+        (some #(or (= :string-index %) (= :disjoint-set-i64 %)) descriptors)
         schema? (or (seq schemas) (seq contracts))
         extended-schema? (or schema? compact-graph? document? symbol? list?)
         indices (descriptor-indices kir)]
