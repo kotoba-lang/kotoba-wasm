@@ -214,6 +214,52 @@
       (finally
         (Files/deleteIfExists path)))))
 
+(deftest component-option-record-capability-projects-a-validated-field
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['call]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'call
+               :params ['x 'enabled 'weight 'fallback]
+               :param-types [:i64 :bool :f32 :i64]
+               :result :i64
+               :body '(component-option-record-capability-project-i64
+                        7 [x enabled weight] fallback
+                        24 8 8 [16] 8)}]}
+        opts {:component-canonical-scalars? true
+              :core-param-types {'call [0x7e 0x7f 0x7d 0x7e]}
+              :capability-imports
+              [{:id 7
+                :module "cm32p2|kotoba:application/clock@1"
+                :field "now"
+                ;; option<record{x:s64,enabled:bool,weight:f32}> + retptr.
+                :type [0x60 5 0x7f 0x7e 0x7f 0x7d 0x7f 0]}]}
+        bytes (wasm/emit-component-core
+               kir :wasm32-wasi-kotoba-v1 opts)
+        path (Files/createTempFile
+              "kotoba-wasm-component-record-capability-" ".wasm"
+              (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))]
+        (is (zero? (:exit validated)) (:err validated)))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"requires a named import"
+           (wasm/emit-component-core
+            kir :wasm32-wasi-kotoba-v1
+            (dissoc opts :capability-imports))))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"result layout is invalid"
+           (wasm/emit-component-core
+            (assoc-in kir [:functions 0 :body]
+                      '(component-option-record-capability-project-i64
+                        7 [x enabled weight] fallback
+                        24 8 8 [24] 8))
+            :wasm32-wasi-kotoba-v1 opts)))
+      (finally
+        (Files/deleteIfExists path)))))
+
 (deftest component-string-length-validates-the-selected-flat-range
   (let [kir {:format :kotoba.kir/v4
              :exports ['length]
