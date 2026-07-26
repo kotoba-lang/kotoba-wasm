@@ -96,3 +96,29 @@
                                   :body '(typed-cap-call 8 :i64 :keyword request)}]}]
     (is (typed/requires-host-runtime? keyword-kir)
         "a keyword-valued capability result is not a native Wasm scalar")))
+
+(deftest canonical-scalar-capability-requires-an-explicit-named-binding
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['call]
+             :schemas {}
+             :effects #{[:cap/call 8]}
+             :functions [{:name 'call :params ['request]
+                          :param-types [:i64] :result :i64
+                          :body '(typed-cap-call 8 :i64 :i64 request)}]}
+        opts {:component-canonical-scalars? true
+              :capability-imports
+              [{:id 8
+                :module "cm32p2|kotoba:application/clock@1"
+                :field "now"
+                :type [0x60 1 0x7e 1 0x7e]}]}
+        bytes (wasm/emit-component-core
+               kir :wasm32-wasi-kotoba-v1 opts)
+        text (String. (byte-array (map unchecked-byte bytes)) "ISO-8859-1")]
+    (is (str/includes? text "cm32p2|kotoba:application/clock@1"))
+    (is (not (str/includes? text (str "kotoba:typed" (char 8) "cap-call"))))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"requires a named import"
+         (wasm/emit-component-core
+          kir :wasm32-wasi-kotoba-v1
+          {:component-canonical-scalars? true}))
+        "canonical adapters cannot fall back to the generic ambient ABI")))
