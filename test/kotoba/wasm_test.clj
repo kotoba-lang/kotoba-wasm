@@ -3,7 +3,7 @@
             [clojure.string :as str]
             [clojure.test :refer [deftest is]]
             [kotoba.wasm.core :as wasm]
-            [kotoba.wasm.typed]
+            [kotoba.wasm.typed :as typed]
             [kotoba.wasm.canonical-abi :as canonical]
             [kotoba.wasm.tools])
   (:import [java.nio.file Files]
@@ -61,3 +61,38 @@
     (is (= [:i32 :i32 :i32] (:flat layout)))
     (is (= :vector-i64
            (get-in layout [:cases 1 :layout :descriptor])))))
+
+;; A `typed-cap-call`'s two TYPE arguments are syntax, not values. Counting them
+;; as keyword literals made a program whose every value is a scalar look like it
+;; needed the `kotoba:typed` host intrinsics, so the emitted component core
+;; module imported `kotoba:typed`/`kotoba:heap` -- imports no WIT interface can
+;; bind. `wasm-tools component new` then rejected the module, which made every
+;; source-level `(typed-cap-call <id> :i64 :i64 x)` unrepresentable as a
+;; Component despite `:scalar-with-capabilities` existing to admit exactly that.
+(deftest typed-cap-call-type-arguments-are-not-keyword-literals
+  (let [scalar-kir {:format :kotoba.kir/v4
+                    :exports ['call]
+                    :schemas {}
+                    :effects #{[:cap/call 8]}
+                    :functions [{:name 'call :params ['request]
+                                 :param-types [:i64] :result :i64
+                                 :body '(typed-cap-call 8 :i64 :i64 request)}]}]
+    (is (not (typed/requires-host-runtime? scalar-kir))
+        "a scalar capability call needs no host runtime")
+    (is (empty? (typed/literal-table scalar-kir))
+        "the :i64 type arguments must not appear as guest keyword literals")
+    ;; The capability contract still reads those same positions -- suppressing
+    ;; them as literals must not suppress them as the sealed contract.
+    (is (= [{:id 8 :request-type :i64 :result-type :i64}]
+           (typed/capability-contracts scalar-kir))))
+  ;; A keyword the guest actually computes with is still a literal, and a
+  ;; non-scalar capability type still needs the host runtime.
+  (let [keyword-kir {:format :kotoba.kir/v4
+                     :exports ['call]
+                     :schemas {}
+                     :effects #{[:cap/call 8]}
+                     :functions [{:name 'call :params ['request]
+                                  :param-types [:i64] :result :keyword
+                                  :body '(typed-cap-call 8 :i64 :keyword request)}]}]
+    (is (typed/requires-host-runtime? keyword-kir)
+        "a keyword-valued capability result is not a native Wasm scalar")))

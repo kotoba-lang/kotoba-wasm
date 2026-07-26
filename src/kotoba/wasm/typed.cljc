@@ -210,6 +210,25 @@
 
 (defn- literal-walk [form found]
   (cond
+    ;; `typed-cap-call`'s two TYPE positions are syntax, not values: they are
+    ;; the sealed capability contract `capability-contracts` above reads, and
+    ;; the guest never computes with them. Every other bare keyword stays a
+    ;; literal (a scalar type keyword such as `:bool` is also a perfectly good
+    ;; executable keyword value), so this is a positional exception, not a
+    ;; blanket "keywords in call position are syntax" rule.
+    ;;
+    ;; Counting them made `requires-host-runtime?` true for a program whose
+    ;; every value is a scalar, so the emitted component core module imported
+    ;; the `kotoba:typed` intrinsics -- imports that no WIT interface binds.
+    ;; `wasm-tools component new` then rejected the module with `failed to
+    ;; resolve import kotoba:typed::literal`, which made every source-level
+    ;; `(typed-cap-call <id> :i64 :i64 x)` unrepresentable as a Component even
+    ;; though ADR 0076 increment 1's `:scalar-with-capabilities` lowering
+    ;; exists precisely to admit it. The four hand-written capability shapes
+    ;; never hit this because they emit WAT directly instead of going through
+    ;; `emit-component-core`.
+    (and (seq? form) (= 'typed-cap-call (first form)) (= 5 (count form)))
+    (literal-walk (nth form 4) (literal-walk (nth form 1) found))
     ;; Scalar type keywords (for example :bool) are also valid executable
     ;; keyword literals. Only structured vector descriptors are syntax-only.
     (and (vector? form) (descriptor? form)) found
