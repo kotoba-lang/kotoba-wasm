@@ -16,7 +16,7 @@ checkable from outside.
 
 The Canonical ABI owner also normalizes Kotoba's public `:vector-i64` and
 `:vector-f64` descriptors to the standard Component Model `list<s64>` and
-`list<float64>` pointer/length layouts. Hosts and component producers consume
+`list<f64>` pointer/length layouts. Hosts and component producers consume
 that single checked layout instead of reimplementing vector ABI rules.
 
 ## Does not own
