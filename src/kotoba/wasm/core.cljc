@@ -610,12 +610,19 @@
                     (let [[cap-id pointer count fallback max-items stride alignment
                            result-size payload-offset] args
                           typed-import (get intrinsic-indices [:capability cap-id])
+                          realloc-index (get intrinsic-indices
+                                             :component-realloc)
                           _ (when-not typed-import
                               (throw
                                (ex-info
                                 "component aggregate capability requires a named import"
                                 {:phase :wasm-component-aggregate-capability-lowering
                                  :capability cap-id})))
+                          _ (when-not realloc-index
+                              (throw
+                               (ex-info
+                                "component aggregate capability requires canonical realloc"
+                                {:phase :wasm-component-aggregate-capability-lowering})))
                           _ (when-not
                              (and (integer? result-size) (pos? result-size)
                                   (<= result-size 0x7fffffff)
@@ -642,13 +649,19 @@
                            max-items stride alignment env)]
                       (concat
                        (:code request)
+                       ;; Indirect standard32 results use a caller-allocated
+                       ;; retptr parameter, not a returned core pointer.
+                       (i32-const 0) (i32-const 0)
+                       (i32-const alignment) (i32-const result-size)
+                       [0x10 realloc-index ::local-set result-local]
                        ;; The selected branch reconstructs some(list) directly
-                       ;; in the import's standard32 flat signature.
+                       ;; in the import's standard32 flat signature and passes
+                       ;; the result area as the final argument.
                        (i32-const 1)
                        [::local-get (:pointer-local request)
                         ::local-get (:count-local request)
-                        0x10 typed-import
-                        ::local-set result-local]
+                        ::local-get result-local
+                        0x10 typed-import]
                        ;; The imported Canonical lowering returns a pointer to
                        ;; this module's result area. Validate alignment, wrap,
                        ;; and the actual memory bound before loading it.
@@ -1937,7 +1950,11 @@
         code-sec (concat
                   (uleb (+ (count functions) component-function-count))
                   (mapcat #(if typed?
-                             (emit-typed-function-body % indices intrinsic-indices
+                             (emit-typed-function-body
+                                                       % indices
+                                                       (assoc intrinsic-indices
+                                                              :component-realloc
+                                                              realloc-function-index)
                                                        descriptor-indices literal-indices signatures
                                                        opts)
                              (function-body % indices intrinsic-indices))

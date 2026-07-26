@@ -138,12 +138,12 @@
         opts {:component-canonical-scalars? true
               :component-unchecked-bool-params {'call #{0 1}}
               :core-param-types {'call [0x7f 0x7f 0x7e]}
-              ;; option<list<s64>> standard32: disc, pointer, count -> result area.
+              ;; option<list<s64>> standard32: disc, pointer, count, retptr -> ().
               :capability-imports
               [{:id 7
                 :module "cm32p2|kotoba:application/clock@1"
                 :field "now"
-                :type [0x60 3 0x7f 0x7f 0x7f 1 0x7f]}]}
+                :type [0x60 4 0x7f 0x7f 0x7f 0x7f 0]}]}
         bytes (wasm/emit-component-core
                kir :wasm32-wasi-kotoba-v1 opts)
         path (Files/createTempFile
