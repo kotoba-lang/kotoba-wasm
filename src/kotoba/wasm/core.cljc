@@ -606,6 +606,78 @@
                         (concat (emit* request env) [0x10 typed-import])
                         (concat (i32-const cap-id) (emit* request env)
                                 [0x10 (get intrinsic-indices 'typed-cap-call)])))
+                    (= op 'component-option-list-capability-count)
+                    (let [[cap-id pointer count fallback max-items stride alignment
+                           result-size payload-offset] args
+                          typed-import (get intrinsic-indices [:capability cap-id])
+                          _ (when-not typed-import
+                              (throw
+                               (ex-info
+                                "component aggregate capability requires a named import"
+                                {:phase :wasm-component-aggregate-capability-lowering
+                                 :capability cap-id})))
+                          _ (when-not
+                             (and (integer? result-size) (pos? result-size)
+                                  (<= result-size 0x7fffffff)
+                                  (integer? payload-offset) (<= 0 payload-offset)
+                                  (<= (+ payload-offset 8) result-size))
+                              (throw
+                               (ex-info
+                                "component aggregate capability result layout is invalid"
+                                {:phase :wasm-component-aggregate-capability-lowering
+                                 :result-size result-size
+                                 :payload-offset payload-offset})))
+                          request
+                          (emit-component-list-validation
+                           pointer count max-items stride alignment env)
+                          result-local (allocate! 0x7f)
+                          result-end-local (allocate! 0x7f)
+                          disc-local (allocate! 0x7f)
+                          result-pointer-local (allocate! 0x7f)
+                          result-count-local (allocate! 0x7f)
+                          result-list
+                          (emit-component-list-validation
+                           {:wasm-local result-pointer-local}
+                           {:wasm-local result-count-local}
+                           max-items stride alignment env)]
+                      (concat
+                       (:code request)
+                       ;; The selected branch reconstructs some(list) directly
+                       ;; in the import's standard32 flat signature.
+                       (i32-const 1)
+                       [::local-get (:pointer-local request)
+                        ::local-get (:count-local request)
+                        0x10 typed-import
+                        ::local-set result-local]
+                       ;; The imported Canonical lowering returns a pointer to
+                       ;; this module's result area. Validate alignment, wrap,
+                       ;; and the actual memory bound before loading it.
+                       [::local-get result-local 0x41] (sleb (dec alignment))
+                       [0x71 0x45 0x04 0x40 0x05 0x00 0x0b
+                        ::local-get result-local 0x41] (sleb result-size)
+                       [0x6a ::local-set result-end-local
+                        ::local-get result-end-local ::local-get result-local
+                        0x49 0x04 0x40 0x00 0x0b
+                        ::local-get result-end-local 0x3f 0x00
+                        0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b
+                        ;; option discriminant is u8 for two cases.
+                        ::local-get result-local 0x2d 0x00 0x00
+                        ::local-set disc-local
+                        ::local-get disc-local 0x41 1 0x4b
+                        0x04 0x40 0x00 0x0b
+                        ::local-get disc-local
+                        0x04 0x7e
+                        ::local-get result-local 0x28 0x02]
+                       (uleb payload-offset)
+                       [::local-set result-pointer-local
+                        ::local-get result-local 0x28 0x02]
+                       (uleb (+ payload-offset 4))
+                       [::local-set result-count-local]
+                       (:code result-list)
+                       [::local-get (:count-local result-list) 0xad
+                        0x05]
+                       (emit* fallback env)
+                       [0x0b]))
                     (= op 'i64-extend-i32-u)
                     (concat (emit* (first args) env) [0xad])
                     (= op 'component-unreachable)

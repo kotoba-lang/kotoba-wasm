@@ -334,6 +334,7 @@
         (= op 'component-list-at-f64) :f64
         (= op 'component-list-get-i64) :i64
         (= op 'component-list-get-f64) :f64
+        (= op 'component-option-list-capability-count) :i64
         (contains? '#{+ - * quot bit-xor bit-and bit-or bit-not
                       cap-call pair pair-first pair-second
                       i32-wrap u32-wrap i32-wrapping-add i32-wrapping-mul i32-xor
