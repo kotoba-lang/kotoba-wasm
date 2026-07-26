@@ -244,10 +244,22 @@
   (list 'f64-from-bits (if (string? bits) (exact-i64 bits) bits)))
 
 (defn- f64-horner [z coefficient-bits]
-  (reduce (fn [polynomial bits]
-            (list 'f64-add (f64-constant bits) (list 'f64-mul z polynomial)))
-          (f64-constant (first coefficient-bits))
-          (rest coefficient-bits)))
+  ;; Preserve Horner's exact operation order without constructing a deeply
+  ;; nested expression. The typed emitter lowers `let` bindings iteratively,
+  ;; so large fixed polynomials do not depend on the host JavaScript stack.
+  (loop [remaining (rest coefficient-bits)
+         previous (f64-constant (first coefficient-bits))
+         index 0
+         bindings []]
+    (if-let [bits (first remaining)]
+      (let [name (symbol (str "horner-step-" index))]
+        (recur (next remaining)
+               name
+               (inc index)
+               (conj bindings name
+                     (list 'f64-add (f64-constant bits)
+                           (list 'f64-mul z previous)))))
+      (list 'let bindings previous))))
 
 (defn- bounded-sin-form [x]
   (let [z (list 'f64-mul x x)
@@ -793,6 +805,29 @@
                  [0x6c 0x6a load-op 0x03 0x00 0x05]
                  (emit* fallback env)
                  [0x0b])))
+            (emit-component-string-byte-length [args env]
+              (let [[pointer length max-bytes] args
+                    pointer-local (allocate! 0x7f)
+                    length-local (allocate! 0x7f)
+                    end-local (allocate! 0x7f)]
+                (when-not (and (integer? max-bytes)
+                               (<= 0 max-bytes 0x7fffffff))
+                  (throw
+                   (ex-info "component string byte bound is invalid"
+                            {:phase :wasm-component-scalar-lowering
+                             :max-bytes max-bytes})))
+                (concat
+                 (emit* pointer env) [::local-set pointer-local]
+                 (emit* length env) [::local-set length-local]
+                 [::local-get length-local 0x41] (sleb max-bytes)
+                 [0x4b 0x04 0x40 0x00 0x0b
+                  ::local-get pointer-local ::local-get length-local
+                  0x6a ::local-set end-local
+                  ::local-get end-local ::local-get pointer-local
+                  0x49 0x04 0x40 0x00 0x0b
+                  ::local-get end-local 0x3f 0x00
+                  0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b
+                  ::local-get length-local 0xad])))
             (emit-assoc [type value index replacement replacement-type env]
               (concat (i32-const (descriptor-id type)) (emit* value env)
                       (i32-const index) (emit* replacement env)
@@ -876,11 +911,6 @@
                         (concat (emit* request env) [0x10 typed-import])
                         (concat (i32-const cap-id) (emit* request env)
                                 [0x10 (get intrinsic-indices 'typed-cap-call)])))
-                    (contains? aggregate-capability-ops op)
-                    (emit-aggregate-capability*
-                     op args env emit* allocate! intrinsic-indices
-                     emit-option-list-capability-count
-                     emit-result-list-capability-count)
                     (= op 'i64-extend-i32-u)
                     (concat (emit* (first args) env) [0xad])
                     (= op 'component-unreachable)
@@ -898,33 +928,7 @@
                     (= op 'component-i64-to-f64)
                     (concat (emit* (first args) env) [0xbf])
                     (= op 'component-string-byte-length)
-                    (let [[pointer length max-bytes] args
-                          pointer-local (allocate! 0x7f)
-                          length-local (allocate! 0x7f)
-                          end-local (allocate! 0x7f)]
-                      (when-not (and (integer? max-bytes)
-                                     (<= 0 max-bytes 0x7fffffff))
-                        (throw
-                         (ex-info "component string byte bound is invalid"
-                                  {:phase :wasm-component-scalar-lowering
-                                   :max-bytes max-bytes})))
-                      (concat
-                       (emit* pointer env) [::local-set pointer-local]
-                       (emit* length env) [::local-set length-local]
-                       ;; The selected string must respect its descriptor's
-                       ;; byte bound.
-                       [::local-get length-local 0x41] (sleb max-bytes)
-                       [0x4b 0x04 0x40 0x00 0x0b]
-                       ;; end = ptr + len, rejecting unsigned wrap.
-                       [::local-get pointer-local ::local-get length-local
-                        0x6a ::local-set end-local
-                        ::local-get end-local ::local-get pointer-local
-                        0x49 0x04 0x40 0x00 0x0b]
-                       ;; Validate against the module's actual memory, not a
-                       ;; duplicated compile-time page assumption.
-                       [::local-get end-local 0x3f 0x00
-                        0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b
-                        ::local-get length-local 0xad]))
+                    (emit-component-string-byte-length args env)
                     (= op 'component-list-count)
                     (let [[pointer count max-items stride alignment] args
                           {:keys [code count-local]}
@@ -1191,6 +1195,17 @@
                                (emit* (second args) env) [::local-set right-local]
                                [::local-get left-local ::local-get left-local 0x5c
                                 ::local-get right-local ::local-get right-local 0x5c 0x72])))
+                    ;; Keep capability-only dispatch after the scalar numeric
+                    ;; families. CLJS emits `cond` as nested JavaScript
+                    ;; branches; putting this comparatively large predicate
+                    ;; before the deeply expanded f32/f64 kernels consumes
+                    ;; enough stack to fail on macOS runners with a smaller
+                    ;; Node stack.
+                    (contains? aggregate-capability-ops op)
+                    (emit-aggregate-capability*
+                     op args env emit* allocate! intrinsic-indices
+                     emit-option-list-capability-count
+                     emit-result-list-capability-count)
                     (contains? '#{+ - * quot bit-xor bit-and bit-or} op)
                     (let [opcode ({'+ 0x7c '- 0x7d '* 0x7e 'quot 0x7f
                                    'bit-and 0x83 'bit-xor 0x85 'bit-or 0x84} op)]
