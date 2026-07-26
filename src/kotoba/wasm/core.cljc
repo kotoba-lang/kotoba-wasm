@@ -383,9 +383,13 @@
 
 (defn- emit-typed-function-body
   [function function-indices intrinsic-indices descriptor-indices literal-indices signatures
-   {:keys [component-canonical-scalars? component-unchecked-bool-params]}]
+  {:keys [component-canonical-scalars? component-unchecked-bool-params]}]
   (let [locals (volatile! [])
         param-count (count (:params function))
+        unchecked-bool-param-indices
+        (if (map? component-unchecked-bool-params)
+          (get component-unchecked-bool-params (:name function) #{})
+          (or component-unchecked-bool-params #{}))
         wasm-type (fn [type]
                     (if (and component-canonical-scalars? (= :bool type))
                       0x7f
@@ -1260,7 +1264,7 @@
                               (cond
                                 (and component-canonical-scalars?
                                      (= :bool type)
-                                     (not (contains? component-unchecked-bool-params index)))
+                                     (not (contains? unchecked-bool-param-indices index)))
                                 [::local-get index 0x41 1 0x4b 0x04 0x40 0x00 0x0b]
                                 (reference-type? type)
                                 (concat (i32-const (descriptor-id type)) [::local-get index]
