@@ -223,7 +223,10 @@
     (is (= {:descriptor :i64 :size 8 :alignment 8 :flat [:i64]}
            (:item-layout value)))
     (is (= value/canonical-list-item-limit (:max-items value)))
-    (is (= [:checked-pointer-range :bounded-item-count] (:validation value)))
+    (is (= value/canonical-list-total-item-limit (:max-total-items value)))
+    (is (= [:checked-pointer-range :bounded-item-count
+            :bounded-total-item-count]
+           (:validation value)))
     (is (= [:i32]
            (:core-results
             (canonical/export-plan
@@ -276,6 +279,7 @@
     (is (= [{:offset 0 :descriptor :i64}
             {:offset 8 :descriptor [:list :i64]
              :max-items value/canonical-list-item-limit
+             :max-total-items value/canonical-list-total-item-limit
              :item-layout {:descriptor :i64 :size 8 :alignment 8 :flat [:i64]}}
             {:offset 16 :descriptor :bool}]
            (canonical/layout-leaves outer-layout)))))
@@ -298,9 +302,15 @@
              {:name 'echo :params ['value] :param-types [descriptor] :result descriptor}
              schemas))))))
 
-(deftest list-item-type-must-not-itself-be-a-list
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"list item type must not itself be a list"
-                        (canonical/layout [:list [:list :i64]]))))
+(deftest nested-lists-retain-recursive-layout-and-one-total-item-budget
+  (let [layout (canonical/layout [:list [:list :i64]])]
+    (is (= [:list [:list :i64]] (:descriptor layout)))
+    (is (= [:list :i64] (get-in layout [:item-layout :descriptor])))
+    (is (= :i64 (get-in layout [:item-layout :item-layout :descriptor])))
+    (is (= value/canonical-list-item-limit (:max-items layout)))
+    (is (= value/canonical-list-total-item-limit (:max-total-items layout)))
+    (is (= value/canonical-list-total-item-limit
+           (get-in layout [:item-layout :max-total-items])))))
 
 (deftest list-item-type-must-be-a-qualified-canonical-abi-descriptor
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"no qualified Canonical ABI layout"

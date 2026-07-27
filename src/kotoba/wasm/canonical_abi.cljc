@@ -352,32 +352,28 @@
   list leaf apart from a plain scalar leaf or a string/keyword leaf without
   re-deriving it from the descriptor; the corresponding `:validation` tag is
   `:bounded-item-count`, alongside the same `:checked-pointer-range` tag
-  every other indirect (pointer-bearing) leaf already carries.
+  every other indirect (pointer-bearing) leaf already carries. Nested lists
+  additionally share `value/canonical-list-total-item-limit` across the
+  complete active graph; exposing it as `:max-total-items` prevents a caller
+  from accidentally multiplying the per-node bound at each depth.
 
-  An item type that is itself a `[:list ...]` is rejected before any layout
-  is computed: unlike ADR 0051's one-level nested record (whose *fields* are
-  still bounded to plain scalars), a list-of-lists would need a second,
-  independent variable length and stride nested inside the first, and that
-  shape is an explicitly separate, still-open gap (ADR 0049's remaining
-  gaps), not a narrowing of this slice's one already-admitted case. An item
-  type that is itself a recursive nominal schema (a record/variant that
+  An item type that is itself a recursive nominal schema (a record/variant that
   reaches back to an identity already in `visited`, including by way of a
   list) is still caught by `record-layout`/`variant-layout`'s own existing
   recursion guard: `visited` is threaded straight through unchanged, exactly
   as a record field or variant case payload's own type already does."
   [descriptor schemas visited]
-  (let [item-descriptor (second descriptor)]
-    (when (and (vector? item-descriptor) (= :list (first item-descriptor)))
-      (reject "list item type must not itself be a list in this slice"
-              {:descriptor descriptor :item-descriptor item-descriptor}))
-    (let [item-layout (layout* item-descriptor schemas visited)]
+  (let [item-descriptor (second descriptor)
+        item-layout (layout* item-descriptor schemas visited)]
       {:descriptor descriptor
        :size 8
        :alignment 4
        :flat [:i32 :i32]
        :item-layout item-layout
        :max-items value/canonical-list-item-limit
-       :validation [:checked-pointer-range :bounded-item-count]})))
+       :max-total-items value/canonical-list-total-item-limit
+       :validation [:checked-pointer-range :bounded-item-count
+                    :bounded-total-item-count]}))
 
 (defn- layout* [descriptor schemas visited]
   (cond
@@ -498,6 +494,7 @@
                   (contains? layout :max-items)
                   [{:offset absolute :descriptor (:descriptor layout)
                     :max-items (:max-items layout)
+                    :max-total-items (:max-total-items layout)
                     :item-layout (:item-layout layout)}]
 
                   :else
