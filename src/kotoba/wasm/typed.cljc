@@ -141,13 +141,14 @@
                       document-string document-keyword document-vector document-map
                       document-count document-kind document-vector-at document-map-entry-at document-vector-assoc
                       document-vector-conj document-vector-drop document-vector-remove
-                      document-equal? document-contains document-get document-assoc
+                      document-equal? document-sha256 document-contains document-get document-assoc
                       document-dissoc document-merge document-string-value document-keyword-value
                       document-bool-value document-i64-value document-f64-value}
                     (first value)))
     (reduce (fn [result item] (walk item result))
             (cond-> (conj found :document)
-              (= 'document-kind (first value)) (conj :keyword))
+              (= 'document-kind (first value)) (conj :keyword)
+              (= 'document-sha256 (first value)) (conj :string))
             value)
     (and (seq? value) (= 'keyword-from-string (first value)))
     (reduce (fn [result item] (walk item result)) (conj found :keyword) value)
@@ -409,6 +410,7 @@
                       document-vector-remove document-map-entry-at
                       document-assoc document-dissoc document-merge} op) :document
         (contains? '#{document-get document-vector-at document-map-entry-at} op) [:option :document]
+        (= op 'document-sha256) :string
         (= op 'document-string-value) [:option :string]
         (= op 'document-keyword-value) [:option :keyword]
         (= op 'document-bool-value) [:option :bool]

@@ -2210,6 +2210,9 @@
                      (concat (i32-const (descriptor-id :document))
                              (emit* (first args) env) (emit* (second args) env)
                              [0x10 (get intrinsic-indices 'typed-equal)]))
+                    (= op 'document-sha256)
+                    (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
+                            [0x10 (get intrinsic-indices 'typed-document-sha256)])
                     (contains? '#{document-get document-assoc document-dissoc
                                   document-merge document-string-value document-bool-value
                                   document-keyword-value document-i64-value document-f64-value} op)
@@ -2730,7 +2733,7 @@
                                           document-string document-keyword document-vector document-map
                                           document-count document-kind document-vector-at document-map-entry-at document-vector-assoc
                                           document-vector-conj document-vector-drop document-vector-remove
-                                          document-equal? document-contains document-get document-assoc
+                                          document-equal? document-sha256 document-contains document-get document-assoc
                                           document-dissoc document-merge document-string-value
                                           document-keyword-value document-bool-value
                                           document-i64-value document-f64-value})
@@ -2820,6 +2823,7 @@
                             ['typed-document-string "kotoba:typed" "document-string" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-keyword "kotoba:typed" "document-keyword" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-kind "kotoba:typed" "document-kind" [0x60 2 0x7f 0x6f 1 0x6f]]
+                            ['typed-document-sha256 "kotoba:typed" "document-sha256" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-vector-at "kotoba:typed" "document-vector-at" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                             ['typed-document-map-entry-at "kotoba:typed" "document-map-entry-at" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                             ['typed-document-vector-assoc "kotoba:typed" "document-vector-assoc" [0x60 4 0x7f 0x6f 0x7e 0x6f 1 0x6f]]
