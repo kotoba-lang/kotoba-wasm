@@ -508,6 +508,109 @@
     (emit-option-record-capability-project*
      op args env emit* allocate! intrinsic-indices)))
 
+(defn- parse-recursive-item-plan
+  "Parse the closed prefix encoding used by component item-validation kind 6.
+  Nodes are: 0 scalar/empty, 1 bool, 2 string(max-bytes),
+  3 record(field-count, offset+node...), 4 union(case-count,payload-offset,
+  node...), and 5 list(max-items,stride,alignment,node)."
+  [words]
+  (let [seen (atom 0)]
+    (letfn [(parse-node [index depth]
+              (let [kind (get words index)]
+                (when (and (integer? kind)
+                           (< depth 32)
+                           (<= (swap! seen inc) 1024))
+                  (case kind
+                    0 [{:kind :scalar} (inc index)]
+                    1 [{:kind :bool} (inc index)]
+                    2 (let [maximum (get words (inc index))]
+                        (when (and (integer? maximum)
+                                   (<= 0 maximum 0x7fffffff))
+                          [{:kind :string :maximum maximum} (+ index 2)]))
+                    3 (let [field-count (get words (inc index))]
+                        (when (and (integer? field-count)
+                                   (<= 1 field-count 256))
+                          (loop [remaining field-count
+                                 cursor (+ index 2)
+                                 fields []]
+                            (if (zero? remaining)
+                              [{:kind :record :fields fields} cursor]
+                              (let [offset (get words cursor)
+                                    parsed (when (and (integer? offset)
+                                                      (<= 0 offset 0x7fffffff))
+                                             (parse-node (inc cursor)
+                                                         (inc depth)))]
+                                (when parsed
+                                  (recur (dec remaining) (second parsed)
+                                         (conj fields
+                                               {:offset offset
+                                                :node (first parsed)}))))))))
+                    4 (let [case-count (get words (inc index))
+                            payload-offset (get words (+ index 2))]
+                        (when (and (integer? case-count)
+                                   (<= 1 case-count 256)
+                                   (integer? payload-offset)
+                                   (<= 0 payload-offset 0x7fffffff))
+                          (loop [remaining case-count
+                                 cursor (+ index 3)
+                                 cases []]
+                            (if (zero? remaining)
+                              [{:kind :union
+                                :payload-offset payload-offset
+                                :cases cases}
+                               cursor]
+                              (when-let [parsed
+                                         (parse-node cursor (inc depth))]
+                                (recur (dec remaining) (second parsed)
+                                       (conj cases (first parsed))))))))
+                    5 (let [maximum (get words (inc index))
+                            stride (get words (+ index 2))
+                            alignment (get words (+ index 3))]
+                        (when (and (integer? maximum)
+                                   (<= 0 maximum 0x7fffffff)
+                                   (integer? stride)
+                                   (<= 1 stride 0x7fffffff)
+                                   (<= (* maximum stride) 0xffffffff)
+                                   (integer? alignment)
+                                   (pos? alignment)
+                                   (zero? (bit-and alignment (dec alignment)))
+                                   (<= alignment 0x40000000))
+                          (when-let [parsed
+                                     (parse-node (+ index 4) (inc depth))]
+                            [{:kind :list
+                              :maximum maximum
+                              :stride stride
+                              :alignment alignment
+                              :item (first parsed)}
+                             (second parsed)])))
+                    nil))))]
+      (when-let [[node cursor] (parse-node 0 0)]
+        (when (= cursor (count words)) node)))))
+
+(defn- recursive-item-plan-fits?
+  "Prove every fixed offset/load in a recursive plan stays within its parent
+  Canonical layout. Runtime pointer ranges are checked separately."
+  [node available]
+  (case (:kind node)
+    :scalar true
+    :bool (<= 1 available)
+    :string (<= 8 available)
+    :record
+    (every? (fn [{:keys [offset node]}]
+              (and (<= offset available)
+                   (recursive-item-plan-fits? node (- available offset))))
+            (:fields node))
+    :union
+    (and (<= 1 available)
+         (<= (:payload-offset node) available)
+         (every? #(recursive-item-plan-fits?
+                   % (- available (:payload-offset node)))
+                 (:cases node)))
+    :list
+    (and (<= 8 available)
+         (recursive-item-plan-fits? (:item node) (:stride node)))
+    false))
+
 (defn- emit-typed-function-body
   [function function-indices intrinsic-indices descriptor-indices literal-indices signatures
   {:keys [component-canonical-scalars? component-unchecked-bool-params]}]
@@ -648,7 +751,16 @@
                       (when (and (integer? union-case-count)
                                  (= (* 2 union-case-count)
                                     (count union-case-words)))
-                        (mapv vec (partition 2 union-case-words)))]
+                        (mapv vec (partition 2 union-case-words)))
+                      recursive-byte-total (first item-validation-args)
+                      recursive-item-total (second item-validation-args)
+                      recursive-plan
+                      (when (and (integer? recursive-byte-total)
+                                 (<= 0 recursive-byte-total 0x7fffffff)
+                                 (integer? recursive-item-total)
+                                 (<= 0 recursive-item-total 0x7fffffff))
+                        (parse-recursive-item-plan
+                         (vec (drop 2 item-validation-args))))]
                  (when-not
                   (case item-kind
                     1 (and (= 1 (count item-validation-args))
@@ -704,6 +816,8 @@
                                             (< union-payload-offset stride))
                                      false)))
                             union-cases))
+                    6 (and recursive-plan
+                           (recursive-item-plan-fits? recursive-plan stride))
                     false)
                   (throw
                    (ex-info
@@ -1013,7 +1127,172 @@
                        0x41 0x01 0x6a
                        ::local-set index-local
                        0x0c 0x00
-                       0x0b 0x0b])))))))
+                       0x0b 0x0b]))
+
+                   6
+                   (let [item-total-local (allocate! 0x7f)]
+                     (letfn [(address-code [base-local offset]
+                               (concat
+                                [::local-get base-local]
+                                (when (pos? offset)
+                                  (concat (i32-const offset) [0x6a]))))
+                             (node-code [node base-local offset]
+                               (case (:kind node)
+                                 :scalar []
+                                 :bool
+                                 (concat
+                                  (address-code base-local offset)
+                                  [0x2d 0x00 0x00
+                                   0x41 0x01
+                                   0x4b 0x04 0x40 0x00 0x0b])
+                                 :string
+                                 (concat
+                                  (address-code base-local offset)
+                                  [0x28 0x02 0x00
+                                   ::local-set pointer-local]
+                                  (address-code base-local (+ offset 4))
+                                  [0x28 0x02 0x00
+                                   ::local-set length-local
+                                   ::local-get length-local
+                                   0x41] (sleb (:maximum node))
+                                  [0x4b 0x04 0x40 0x00 0x0b
+                                   ::local-get total-local
+                                   ::local-get length-local
+                                   0x6a ::local-set next-total-local
+                                   ::local-get next-total-local
+                                   ::local-get total-local
+                                   0x49 0x04 0x40 0x00 0x0b
+                                   ::local-get next-total-local
+                                   0x41] (sleb recursive-byte-total)
+                                  [0x4b 0x04 0x40 0x00 0x0b
+                                   ::local-get next-total-local
+                                   ::local-set total-local
+                                   ::local-get pointer-local
+                                   ::local-get length-local
+                                   0x6a ::local-set end-local
+                                   ::local-get end-local
+                                   ::local-get pointer-local
+                                   0x49 0x04 0x40 0x00 0x0b
+                                   ::local-get end-local
+                                   0x3f 0x00
+                                   0x41 16 0x74
+                                   0x4b 0x04 0x40 0x00 0x0b])
+                                 :record
+                                 (mapcat
+                                  (fn [{field-offset :offset child :node}]
+                                    (node-code child base-local
+                                               (+ offset field-offset)))
+                                  (:fields node))
+                                 :union
+                                 (let [disc-local (allocate! 0x7f)]
+                                   (concat
+                                    (address-code base-local offset)
+                                    [0x2d 0x00 0x00
+                                     ::local-set disc-local
+                                     ::local-get disc-local
+                                     0x41] (sleb (count (:cases node)))
+                                    [0x4f 0x04 0x40 0x00 0x0b]
+                                    (mapcat
+                                     (fn [case-index child]
+                                       (concat
+                                        [::local-get disc-local
+                                         0x41] (sleb case-index)
+                                        [0x46 0x04 0x40]
+                                        (node-code
+                                         child base-local
+                                         (+ offset (:payload-offset node)))
+                                        [0x0b]))
+                                     (range (count (:cases node)))
+                                     (:cases node))))
+                                 :list
+                                 (let [nested-pointer-local (allocate! 0x7f)
+                                       nested-count-local (allocate! 0x7f)
+                                       validated
+                                       (emit-component-list-validation
+                                        {:wasm-local nested-pointer-local}
+                                        {:wasm-local nested-count-local}
+                                        (:maximum node)
+                                        (:stride node)
+                                        (:alignment node)
+                                        env)
+                                       nested-next-total-local
+                                       (allocate! 0x7f)
+                                       child (:item node)
+                                       traversal
+                                       (when-not (= :scalar (:kind child))
+                                         (let [nested-index-local
+                                               (allocate! 0x7f)
+                                               nested-item-local
+                                               (allocate! 0x7f)]
+                                           (concat
+                                            (i32-const 0)
+                                            [::local-set nested-index-local
+                                             0x02 0x40
+                                             0x03 0x40
+                                             ::local-get nested-index-local
+                                             ::local-get
+                                             (:count-local validated)
+                                             0x4f
+                                             0x0d 0x01
+                                             ::local-get
+                                             (:pointer-local validated)
+                                             ::local-get nested-index-local
+                                             0x41]
+                                            (sleb (:stride node))
+                                            [0x6c 0x6a
+                                             ::local-set nested-item-local]
+                                            (node-code child nested-item-local 0)
+                                            [::local-get nested-index-local
+                                             0x41 0x01 0x6a
+                                             ::local-set nested-index-local
+                                             0x0c 0x00
+                                             0x0b 0x0b])))]
+                                   (concat
+                                    (address-code base-local offset)
+                                    [0x28 0x02 0x00
+                                     ::local-set nested-pointer-local]
+                                    (address-code base-local (+ offset 4))
+                                    [0x28 0x02 0x00
+                                     ::local-set nested-count-local]
+                                    (:code validated)
+                                    [::local-get item-total-local
+                                     ::local-get (:count-local validated)
+                                     0x6a
+                                     ::local-set nested-next-total-local
+                                     ::local-get nested-next-total-local
+                                     ::local-get item-total-local
+                                     0x49 0x04 0x40 0x00 0x0b
+                                     ::local-get nested-next-total-local
+                                     0x41] (sleb recursive-item-total)
+                                    [0x4b 0x04 0x40 0x00 0x0b
+                                     ::local-get nested-next-total-local
+                                     ::local-set item-total-local]
+                                    traversal))
+                                 []))]
+                       (concat
+                        (i32-const 0) [::local-set total-local]
+                        [::local-get (:count-local list-validation)
+                         ::local-set item-total-local
+                         ::local-get item-total-local
+                         0x41] (sleb recursive-item-total)
+                        [0x4b 0x04 0x40 0x00 0x0b]
+                        (i32-const 0) [::local-set index-local]
+                        [0x02 0x40
+                         0x03 0x40
+                         ::local-get index-local
+                         ::local-get (:count-local list-validation)
+                         0x4f
+                         0x0d 0x01
+                         ::local-get (:pointer-local list-validation)
+                         ::local-get index-local
+                         0x41] (sleb stride)
+                        [0x6c 0x6a ::local-set item-local]
+                        (node-code recursive-plan item-local 0)
+                        [::local-get index-local
+                         0x41 0x01 0x6a
+                         ::local-set index-local
+                         0x0c 0x00
+                         0x0b 0x0b]))))))))
             (emit-option-list-capability-count [args env]
               (let [[cap-id pointer count fallback max-items stride alignment
                      result-size payload-offset requested-result-alignment
