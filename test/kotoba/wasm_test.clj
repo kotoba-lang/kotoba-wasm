@@ -264,6 +264,29 @@
                       7 'pointer 'count 'fallback 16 8 4 12 4 4
                       invalid-plan))
               :wasm32-wasi-kotoba-v1 opts))))
+      (is (bytes?
+           (wasm/emit-component-core
+            (assoc-in kir [:functions 0 :body]
+                      '(component-option-list-capability-count
+                        7 pointer count fallback 16 12 4 12 4 4
+                        5 2 4 1048576 1 65536 2 0))
+            :wasm32-wasi-kotoba-v1 opts))
+          "kind 5 validates only the selected union case payload")
+      (doseq [invalid-plan [[5 2 4 1048576 1 65536]
+                            [5 257 4 1048576]
+                            [5 2 8 1048576 1 65536 2 0]
+                            [5 2 4 1048576 1 1048577 2 0]
+                            [5 2 4 1048576 3 0 2 0]
+                            [5 2 4 1048576 1 65536 2 1]]]
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"item validation plan is invalid"
+             (wasm/emit-component-core
+              (assoc-in
+               kir [:functions 0 :body]
+               (apply list 'component-option-list-capability-count
+                      7 'pointer 'count 'fallback 16 12 4 12 4 4
+                      invalid-plan))
+              :wasm32-wasi-kotoba-v1 opts))))
       (finally
         (Files/deleteIfExists path)))))
 
