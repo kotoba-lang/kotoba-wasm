@@ -639,7 +639,16 @@
                       (when (and (integer? nested-depth)
                                  (= (* 2 nested-depth)
                                     (count nested-layout-words)))
-                        (mapv vec (partition 2 nested-layout-words)))]
+                        (mapv vec (partition 2 nested-layout-words)))
+                      union-case-count (first item-validation-args)
+                      union-payload-offset (second item-validation-args)
+                      union-total (nth item-validation-args 2 nil)
+                      union-case-words (vec (drop 3 item-validation-args))
+                      union-cases
+                      (when (and (integer? union-case-count)
+                                 (= (* 2 union-case-count)
+                                    (count union-case-words)))
+                        (mapv vec (partition 2 union-case-words)))]
                  (when-not
                   (case item-kind
                     1 (and (= 1 (count item-validation-args))
@@ -673,6 +682,28 @@
                                                    (dec item-alignment)))
                                    (<= item-alignment 0x40000000)))
                             nested-layouts))
+                    5 (and (integer? union-case-count)
+                           (<= 1 union-case-count 256)
+                           (integer? union-payload-offset)
+                           (<= 0 union-payload-offset)
+                           (< union-payload-offset stride)
+                           (integer? union-total)
+                           (<= 0 union-total 0x7fffffff)
+                           union-cases
+                           (every?
+                            (fn [[case-kind case-max]]
+                              (and (integer? case-kind)
+                                   (<= 0 case-kind 2)
+                                   (integer? case-max)
+                                   (case case-kind
+                                     0 (zero? case-max)
+                                     1 (and (<= 0 case-max union-total)
+                                            (<= (+ union-payload-offset 8)
+                                                stride))
+                                     2 (and (zero? case-max)
+                                            (< union-payload-offset stride))
+                                     false)))
+                            union-cases))
                     false)
                   (throw
                    (ex-info
@@ -905,7 +936,84 @@
                            0x41 0x01 0x6a
                            ::local-set outer-index-local
                            0x0c 0x00
-                           0x0b 0x0b])))))))))
+                           0x0b 0x0b]))))
+
+                   5
+                   (let [discriminant-local (allocate! 0x7f)]
+                     (concat
+                      ;; Validate the discriminant before selecting a case.
+                      ;; Only the selected case may inspect the joined payload:
+                      ;; inactive pointer-shaped bytes are intentionally ignored.
+                      (i32-const 0) [::local-set index-local]
+                      (i32-const 0) [::local-set total-local]
+                      [0x02 0x40
+                       0x03 0x40
+                       ::local-get index-local
+                       ::local-get (:count-local list-validation)
+                       0x4f
+                       0x0d 0x01
+                       ::local-get (:pointer-local list-validation)
+                       ::local-get index-local
+                       0x41] (sleb stride)
+                      [0x6c 0x6a ::local-set item-local
+                       ::local-get item-local
+                       0x2d 0x00 0x00
+                       ::local-set discriminant-local
+                       ::local-get discriminant-local
+                       0x41] (sleb union-case-count)
+                      [0x4f 0x04 0x40 0x00 0x0b]
+                      (mapcat
+                       (fn [case-index [case-kind case-max]]
+                         (concat
+                          [::local-get discriminant-local
+                           0x41] (sleb case-index)
+                          [0x46 0x04 0x40]
+                          (case case-kind
+                            0 []
+                            1 (concat
+                               [::local-get item-local
+                                0x28 0x02] (uleb union-payload-offset)
+                               [::local-set pointer-local
+                                ::local-get item-local
+                                0x28 0x02] (uleb (+ union-payload-offset 4))
+                               [::local-set length-local
+                                ::local-get length-local
+                                0x41] (sleb case-max)
+                               [0x4b 0x04 0x40 0x00 0x0b
+                                ::local-get total-local
+                                ::local-get length-local
+                                0x6a ::local-set next-total-local
+                                ::local-get next-total-local
+                                ::local-get total-local
+                                0x49 0x04 0x40 0x00 0x0b
+                                ::local-get next-total-local
+                                0x41] (sleb union-total)
+                               [0x4b 0x04 0x40 0x00 0x0b
+                                ::local-get next-total-local
+                                ::local-set total-local
+                                ::local-get pointer-local
+                                ::local-get length-local
+                                0x6a ::local-set end-local
+                                ::local-get end-local
+                                ::local-get pointer-local
+                                0x49 0x04 0x40 0x00 0x0b
+                                ::local-get end-local
+                                0x3f 0x00
+                                0x41 16 0x74
+                                0x4b 0x04 0x40 0x00 0x0b])
+                            2 (concat
+                               [::local-get item-local
+                                0x2d 0x00] (uleb union-payload-offset)
+                               [0x41 0x01
+                                0x4b 0x04 0x40 0x00 0x0b]))
+                          [0x0b]))
+                       (range union-case-count)
+                       union-cases)
+                      [::local-get index-local
+                       0x41 0x01 0x6a
+                       ::local-set index-local
+                       0x0c 0x00
+                       0x0b 0x0b])))))))
             (emit-option-list-capability-count [args env]
               (let [[cap-id pointer count fallback max-items stride alignment
                      result-size payload-offset requested-result-alignment
