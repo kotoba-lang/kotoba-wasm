@@ -243,6 +243,27 @@
                       7 'pointer 'count 'fallback 16 16 8 16 8 8
                       invalid-plan))
               :wasm32-wasi-kotoba-v1 opts))))
+      (is (bytes?
+           (wasm/emit-component-core
+            (assoc-in kir [:functions 0 :body]
+                      '(component-option-list-capability-count
+                        7 pointer count fallback 16 8 4 12 4 4
+                        4 16 2 8 4 8 8))
+            :wasm32-wasi-kotoba-v1 opts))
+          "kind 4 admits a fixed-depth nested-list layout plan")
+      (doseq [invalid-plan [[4 16 0]
+                            [4 16 2 8 4]
+                            [4 16 1 8 3]
+                            [4 16 1 0 1]]]
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"item validation plan is invalid"
+             (wasm/emit-component-core
+              (assoc-in
+               kir [:functions 0 :body]
+               (apply list 'component-option-list-capability-count
+                      7 'pointer 'count 'fallback 16 8 4 12 4 4
+                      invalid-plan))
+              :wasm32-wasi-kotoba-v1 opts))))
       (finally
         (Files/deleteIfExists path)))))
 
