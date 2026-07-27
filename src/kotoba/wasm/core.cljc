@@ -626,9 +626,86 @@
                    0x49 0x04 0x40 0x00 0x0b
                    ::local-get end-local 0x3f 0x00
                    0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b])}))
+            (emit-component-list-item-validation
+              [list-validation stride item-kind max-total-bytes]
+              (when (and item-kind (not= 0 item-kind))
+                (when-not
+                 (and (= 1 item-kind)
+                      (integer? max-total-bytes)
+                      (<= 0 max-total-bytes 0x7fffffff)
+                      (<= 8 stride))
+                  (throw
+                   (ex-info
+                    "component list item validation plan is invalid"
+                    {:phase :wasm-component-list-item-lowering
+                     :item-kind item-kind
+                     :max-total-bytes max-total-bytes
+                     :stride stride})))
+                (let [index-local (allocate! 0x7f)
+                      item-local (allocate! 0x7f)
+                      pointer-local (allocate! 0x7f)
+                      length-local (allocate! 0x7f)
+                      total-local (allocate! 0x7f)
+                      next-total-local (allocate! 0x7f)
+                      end-local (allocate! 0x7f)
+                      max-total max-total-bytes]
+                  (concat
+                   ;; Canonical list<string>/list<keyword> items are
+                   ;; standard32 (pointer,length) records at offsets 0/4.
+                   ;; Visit every item even when the branch only observes the
+                   ;; outer count.
+                   (i32-const 0) [::local-set index-local]
+                   (i32-const 0) [::local-set total-local]
+                   [0x02 0x40
+                    0x03 0x40
+                    ::local-get index-local
+                    ::local-get (:count-local list-validation)
+                    0x4f
+                    0x0d 0x01
+                    ::local-get (:pointer-local list-validation)
+                    ::local-get index-local
+                    0x41] (sleb stride)
+                   [0x6c 0x6a ::local-set item-local
+                    ::local-get item-local
+                    0x28 0x02 0x00
+                    ::local-set pointer-local
+                    ::local-get item-local
+                    0x28 0x02 0x04
+                    ::local-set length-local
+                    ::local-get total-local
+                    ::local-get length-local
+                    0x6a ::local-set next-total-local
+                    ::local-get next-total-local
+                    ::local-get total-local
+                    0x49
+                    0x04 0x40 0x00 0x0b
+                    ::local-get next-total-local
+                    0x41] (sleb max-total)
+                   [0x4b
+                    0x04 0x40 0x00 0x0b
+                    ::local-get next-total-local
+                    ::local-set total-local
+                    ::local-get pointer-local
+                    ::local-get length-local
+                    0x6a ::local-set end-local
+                    ::local-get end-local
+                    ::local-get pointer-local
+                    0x49
+                    0x04 0x40 0x00 0x0b
+                    ::local-get end-local
+                    0x3f 0x00
+                    0x41 16 0x74
+                    0x4b
+                    0x04 0x40 0x00 0x0b
+                    ::local-get index-local
+                    0x41 0x01 0x6a
+                    ::local-set index-local
+                    0x0c 0x00
+                    0x0b 0x0b]))))
             (emit-option-list-capability-count [args env]
               (let [[cap-id pointer count fallback max-items stride alignment
-                     result-size payload-offset requested-result-alignment] args
+                     result-size payload-offset requested-result-alignment
+                     item-kind max-total-bytes] args
                     result-alignment (or requested-result-alignment alignment)
                     typed-import (get intrinsic-indices [:capability cap-id])
                     realloc-index (get intrinsic-indices :component-realloc)
@@ -658,6 +735,9 @@
                            :payload-offset payload-offset})))
                     request (emit-component-list-validation
                              pointer count max-items stride alignment env)
+                    request-items
+                    (emit-component-list-item-validation
+                     request stride item-kind max-total-bytes)
                     result-local (allocate! 0x7f)
                     result-end-local (allocate! 0x7f)
                     disc-local (allocate! 0x7f)
@@ -667,9 +747,13 @@
                     (emit-component-list-validation
                      {:wasm-local result-pointer-local}
                      {:wasm-local result-count-local}
-                     max-items stride alignment env)]
+                     max-items stride alignment env)
+                    result-items
+                    (emit-component-list-item-validation
+                     result-list stride item-kind max-total-bytes)]
                 (concat
                  (:code request)
+                 request-items
                  (i32-const 0) (i32-const 0)
                  (i32-const result-alignment) (i32-const result-size)
                  [0x10 realloc-index ::local-set result-local]
@@ -699,13 +783,15 @@
                  (uleb (+ payload-offset 4))
                  [::local-set result-count-local]
                  (:code result-list)
+                 result-items
                  [::local-get (:count-local result-list) 0xad
                   0x05]
                  (emit* fallback env)
                  [0x0b])))
             (emit-result-list-capability-count [args env]
               (let [[cap-id request-disc pointer count max-items stride alignment
-                     result-size payload-offset requested-result-alignment] args
+                     result-size payload-offset requested-result-alignment
+                     item-kind max-total-bytes] args
                     result-alignment (or requested-result-alignment alignment)
                     typed-import (get intrinsic-indices [:capability cap-id])
                     realloc-index (get intrinsic-indices :component-realloc)
@@ -741,6 +827,9 @@
                            :payload-offset payload-offset})))
                     request (emit-component-list-validation
                              pointer count max-items stride alignment env)
+                    request-items
+                    (emit-component-list-item-validation
+                     request stride item-kind max-total-bytes)
                     result-local (allocate! 0x7f)
                     result-end-local (allocate! 0x7f)
                     disc-local (allocate! 0x7f)
@@ -750,9 +839,13 @@
                     (emit-component-list-validation
                      {:wasm-local result-pointer-local}
                      {:wasm-local result-count-local}
-                     max-items stride alignment env)]
+                     max-items stride alignment env)
+                    result-items
+                    (emit-component-list-item-validation
+                     result-list stride item-kind max-total-bytes)]
                 (concat
                  (:code request)
+                 request-items
                  (i32-const 0) (i32-const 0)
                  (i32-const result-alignment) (i32-const result-size)
                  [0x10 realloc-index ::local-set result-local]
@@ -780,6 +873,7 @@
                  (uleb (+ payload-offset 4))
                  [::local-set result-count-local]
                  (:code result-list)
+                 result-items
                  [::local-get (:count-local result-list) 0xad])))
             (emit-component-list-get [op args env]
               (let [[pointer count index fallback
@@ -1280,8 +1374,24 @@
                     (= op 'vector-new)
                     (emit-builder :vector-i64 -1 args (repeat (count args) :i64) env)
                     (= op 'vector-count)
-                    (concat (i32-const (descriptor-id :vector-i64)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-count)])
+                    (let [value-type
+                          (typed/infer-type
+                           (first args)
+                           (into {} (map (fn [[key item]] [key (:type item)]) env))
+                           signatures)
+                          countable?
+                          (or (= :vector-i64 value-type)
+                              (and (vector? value-type)
+                                   (= 2 (count value-type))
+                                   (= :list (first value-type))))]
+                      (when-not countable?
+                        (throw
+                         (ex-info "vector-count requires a canonical list"
+                                  {:phase :wasm-typed-lowering
+                                   :type value-type})))
+                      (concat (i32-const (descriptor-id value-type))
+                              (emit* (first args) env)
+                              [0x10 (get intrinsic-indices 'typed-count)]))
                     (= op 'vector-at)
                     (concat (i32-const (descriptor-id :vector-i64))
                             (emit* (first args) env) (emit* (second args) env)

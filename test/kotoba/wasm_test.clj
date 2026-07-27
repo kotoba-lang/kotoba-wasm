@@ -33,6 +33,30 @@
     (is (= [20 3] (typed/encode-descriptor [:list :bool])))
     (is (= typed/list-abi-version (first (typed/metadata-bytes kir))))))
 
+(deftest vector-count-uses-the-actual-canonical-list-descriptor
+  (let [descriptor [:list :string]
+        kir {:format :kotoba.kir/v4
+             :exports ['count-items]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'count-items
+               :params ['items]
+               :param-types [descriptor]
+               :result :i64
+               :effects #{}
+               :body '(vector-count items)}]}
+        bytes (wasm/emit kir :wasm32-wasi-kotoba-v1)
+        path (Files/createTempFile
+              "kotoba-wasm-generic-list-count-" ".wasm"
+              (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))]
+        (is (zero? (:exit validated)) (:err validated)))
+      (finally
+        (Files/deleteIfExists path)))))
+
 (deftest canonical-bool-validation-exclusions-are-function-scoped
   (let [kir {:format :kotoba.kir/v4
              :exports ['joined 'ordinary]
@@ -150,7 +174,8 @@
                :param-types [:bool :bool :i64]
                :result :i64
                :body '(component-option-list-capability-count
-                        7 pointer count fallback 16 8 8 16 8)}]}
+                        7 pointer count fallback 16 8 8 16 8 8
+                        1 1048576)}]}
         opts {:component-canonical-scalars? true
               :component-unchecked-bool-params {'call #{0 1}}
               :core-param-types {'call [0x7f 0x7f 0x7e]}
@@ -174,6 +199,14 @@
            (wasm/emit-component-core
             kir :wasm32-wasi-kotoba-v1
             (dissoc opts :capability-imports))))
+      (is (thrown-with-msg?
+           clojure.lang.ExceptionInfo #"item validation plan is invalid"
+           (wasm/emit-component-core
+            (assoc-in kir [:functions 0 :body]
+                      '(component-option-list-capability-count
+                        7 pointer count fallback 16 8 8 16 8 8
+                        1 -1))
+            :wasm32-wasi-kotoba-v1 opts)))
       (finally
         (Files/deleteIfExists path)))))
 
