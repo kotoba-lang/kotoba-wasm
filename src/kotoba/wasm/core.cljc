@@ -627,22 +627,34 @@
                    ::local-get end-local 0x3f 0x00
                    0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b])}))
             (emit-component-list-item-validation
-              [list-validation stride item-kind max-total-bytes]
+              [list-validation stride item-kind item-validation-args]
               (when (and item-kind (not= 0 item-kind))
-                (when-not
-                 (case item-kind
-                   1 (and (integer? max-total-bytes)
-                          (<= 0 max-total-bytes 0x7fffffff)
-                          (<= 8 stride))
-                   2 (and (= 0 max-total-bytes)
-                          (<= 1 stride))
-                   false)
+                (let [max-total-bytes (first item-validation-args)
+                      bool-count (first item-validation-args)
+                      bool-offsets (vec (rest item-validation-args))]
+                 (when-not
+                  (case item-kind
+                    1 (and (= 1 (count item-validation-args))
+                           (integer? max-total-bytes)
+                           (<= 0 max-total-bytes 0x7fffffff)
+                           (<= 8 stride))
+                    2 (and (= [0] item-validation-args)
+                           (<= 1 stride))
+                    3 (and (integer? bool-count)
+                           (= bool-count (count bool-offsets))
+                           (pos? bool-count)
+                           (= bool-count (count (distinct bool-offsets)))
+                           (every? #(and (integer? %)
+                                         (<= 0 %)
+                                         (< % stride))
+                                   bool-offsets))
+                    false)
                   (throw
                    (ex-info
                     "component list item validation plan is invalid"
                     {:phase :wasm-component-list-item-lowering
                      :item-kind item-kind
-                     :max-total-bytes max-total-bytes
+                     :item-validation-args item-validation-args
                      :stride stride})))
                 (let [index-local (allocate! 0x7f)
                       item-local (allocate! 0x7f)
@@ -732,11 +744,43 @@
                      0x41 0x01 0x6a
                      ::local-set index-local
                      0x0c 0x00
-                     0x0b 0x0b])))))
+                     0x0b 0x0b])
+
+                   3
+                   (concat
+                    ;; A finite inline record needs no traversal for numeric
+                    ;; leaves, but every bool field must be canonical even
+                    ;; when source code observes only the outer list count.
+                    (i32-const 0) [::local-set index-local]
+                    [0x02 0x40
+                     0x03 0x40
+                     ::local-get index-local
+                     ::local-get (:count-local list-validation)
+                     0x4f
+                     0x0d 0x01
+                     ::local-get (:pointer-local list-validation)
+                     ::local-get index-local
+                     0x41] (sleb stride)
+                    [0x6c 0x6a ::local-set item-local]
+                    (mapcat
+                     (fn [offset]
+                       (concat
+                        [::local-get item-local
+                         0x2d 0x00]
+                        (uleb offset)
+                        [0x41 0x01
+                         0x4b
+                         0x04 0x40 0x00 0x0b]))
+                     bool-offsets)
+                    [::local-get index-local
+                     0x41 0x01 0x6a
+                     ::local-set index-local
+                     0x0c 0x00
+                     0x0b 0x0b]))))))
             (emit-option-list-capability-count [args env]
               (let [[cap-id pointer count fallback max-items stride alignment
                      result-size payload-offset requested-result-alignment
-                     item-kind max-total-bytes] args
+                     item-kind & item-validation-args] args
                     result-alignment (or requested-result-alignment alignment)
                     typed-import (get intrinsic-indices [:capability cap-id])
                     realloc-index (get intrinsic-indices :component-realloc)
@@ -768,7 +812,7 @@
                              pointer count max-items stride alignment env)
                     request-items
                     (emit-component-list-item-validation
-                     request stride item-kind max-total-bytes)
+                     request stride item-kind item-validation-args)
                     result-local (allocate! 0x7f)
                     result-end-local (allocate! 0x7f)
                     disc-local (allocate! 0x7f)
@@ -781,7 +825,7 @@
                      max-items stride alignment env)
                     result-items
                     (emit-component-list-item-validation
-                     result-list stride item-kind max-total-bytes)]
+                     result-list stride item-kind item-validation-args)]
                 (concat
                  (:code request)
                  request-items
@@ -822,7 +866,7 @@
             (emit-result-list-capability-count [args env]
               (let [[cap-id request-disc pointer count max-items stride alignment
                      result-size payload-offset requested-result-alignment
-                     item-kind max-total-bytes] args
+                     item-kind & item-validation-args] args
                     result-alignment (or requested-result-alignment alignment)
                     typed-import (get intrinsic-indices [:capability cap-id])
                     realloc-index (get intrinsic-indices :component-realloc)
@@ -860,7 +904,7 @@
                              pointer count max-items stride alignment env)
                     request-items
                     (emit-component-list-item-validation
-                     request stride item-kind max-total-bytes)
+                     request stride item-kind item-validation-args)
                     result-local (allocate! 0x7f)
                     result-end-local (allocate! 0x7f)
                     disc-local (allocate! 0x7f)
@@ -873,7 +917,7 @@
                      max-items stride alignment env)
                     result-items
                     (emit-component-list-item-validation
-                     result-list stride item-kind max-total-bytes)]
+                     result-list stride item-kind item-validation-args)]
                 (concat
                  (:code request)
                  request-items
