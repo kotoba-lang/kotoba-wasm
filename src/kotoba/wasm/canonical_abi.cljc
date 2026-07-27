@@ -429,6 +429,15 @@
       (assoc (variant-layout [:ref identity] schemas visited) :descriptor descriptor))
     (and (vector? descriptor) (= :list (first descriptor)))
     (list-layout descriptor schemas visited)
+    ;; Sets lower as Component Model lists (same pointer+length ABI). Item
+    ;; count uses typed-set-item-limit (32), not the list bound (16384) —
+    ;; matching kotoba.kir.value's set domain. Required for log-v1 fields/
+    ;; entries which are [:set record] in the capability kit.
+    (and (vector? descriptor) (= :set (first descriptor)))
+    (assoc (list-layout [:list (second descriptor)] schemas visited)
+           :descriptor descriptor
+           :max-items value/typed-set-item-limit
+           :max-total-items value/typed-set-item-limit)
     (and (vector? descriptor) (= :option (first descriptor)))
     (option-layout descriptor schemas visited)
     (and (vector? descriptor) (= :result (first descriptor)))

@@ -683,3 +683,12 @@
     (is (= [:i64 :i32 :i64 :i32] (:flat outer-layout)))
     (is (= 32 (:size outer-layout)))
     (is (= 8 (:alignment outer-layout)))))
+
+(deftest set-layout-matches-list-pointer-length-with-set-item-bound
+  (let [schemas {:field [:record :field [[:key :keyword] [:value :string]]]}
+        value (canonical/layout [:set [:ref :field]] schemas)]
+    (is (= [:set [:ref :field]] (:descriptor value)))
+    (is (= 8 (:size value)))
+    (is (= [:i32 :i32] (:flat value)))
+    (is (= 32 (:max-items value)))
+    (is (= 16 (get-in value [:item-layout :size])))))
