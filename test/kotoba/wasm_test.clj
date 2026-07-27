@@ -287,6 +287,32 @@
                       7 'pointer 'count 'fallback 16 12 4 12 4 4
                       invalid-plan))
               :wasm32-wasi-kotoba-v1 opts))))
+      (is (bytes?
+           (wasm/emit-component-core
+            (assoc-in kir [:functions 0 :body]
+                      '(component-option-list-capability-count
+                        7 pointer count fallback 16 12 4 12 4 4
+                        6 1048576 16384
+                        4 2 4
+                        2 65536
+                        5 16 1 1 1))
+            :wasm32-wasi-kotoba-v1 opts))
+          "kind 6 admits a closed recursive union/list validation plan")
+      (doseq [invalid-plan
+              [[6 1048576 16384 4 2 4 2 65536]
+               [6 1048576 16384 4 2 12 2 65536 1]
+               [6 1048576 16384 5 16 1 3 1]
+               [6 1048576 16384 3 1 12 1]
+               [6 1048576 16384 1 0]]]
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"item validation plan is invalid"
+             (wasm/emit-component-core
+              (assoc-in
+               kir [:functions 0 :body]
+               (apply list 'component-option-list-capability-count
+                      7 'pointer 'count 'fallback 16 12 4 12 4 4
+                      invalid-plan))
+              :wasm32-wasi-kotoba-v1 opts))))
       (finally
         (Files/deleteIfExists path)))))
 
