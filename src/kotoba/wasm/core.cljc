@@ -611,6 +611,112 @@
          (recursive-item-plan-fits? (:item node) (:stride node)))
     false))
 
+(defn- emit-valid-utf8
+  "Emit a strict scalar-value UTF-8 scan for one already range-checked byte
+  slice. Rejects stray/truncated continuation bytes, overlong encodings,
+  UTF-16 surrogates, and values above U+10FFFF."
+  [pointer-local length-local allocate!]
+  (let [index-local (allocate! 0x7f)
+        next-local (allocate! 0x7f)
+        lead-local (allocate! 0x7f)
+        second-local (allocate! 0x7f)
+        width-local (allocate! 0x7f)
+        load-byte
+        (fn [offset]
+          (concat
+           [::local-get pointer-local
+            ::local-get index-local
+            0x6a]
+           (when (pos? offset)
+             (concat (i32-const offset) [0x6a]))
+           [0x2d 0x00 0x00]))
+        in-range
+        (fn [local minimum maximum]
+          (concat
+           [::local-get local 0x41] (sleb minimum)
+           [0x4f
+            ::local-get local 0x41] (sleb maximum)
+           [0x4d 0x71]))
+        set-width-when
+        (fn [minimum maximum width]
+          (concat
+           (in-range lead-local minimum maximum)
+           [0x04 0x40]
+           (i32-const width)
+           [::local-set width-local 0x0b]))
+        continuation
+        (fn [offset]
+          (concat
+           [::local-get width-local 0x41] (sleb offset)
+           [0x4b 0x04 0x40]
+           (load-byte offset)
+           (when (= offset 1) [::local-tee second-local])
+           [0x41] (sleb 0x80)
+           [0x4f]
+           (load-byte offset)
+           [0x41] (sleb 0xbf)
+           [0x4d 0x71
+            0x45 0x04 0x40 0x00 0x0b
+            0x0b]))
+        special-second
+        (fn [lead comparison boundary]
+          (concat
+           [::local-get lead-local 0x41] (sleb lead)
+           [0x46 0x04 0x40
+            ::local-get second-local
+            0x41] (sleb boundary)
+           [comparison
+            0x45 0x04 0x40 0x00 0x0b
+            0x0b]))]
+    (concat
+     (i32-const 0) [::local-set index-local]
+     [0x02 0x40
+      0x03 0x40
+      ::local-get index-local
+      ::local-get length-local
+      0x4f
+      0x0d 0x01]
+     (load-byte 0)
+     [::local-set lead-local
+      ::local-get lead-local
+      0x41] (sleb 0x80)
+     [0x49
+      0x04 0x40]
+     (i32-const 1)
+     [::local-set width-local
+      0x05]
+     (i32-const 0)
+     [::local-set width-local]
+     (set-width-when 0xc2 0xdf 2)
+     (set-width-when 0xe0 0xef 3)
+     (set-width-when 0xf0 0xf4 4)
+     [::local-get width-local
+      0x45 0x04 0x40 0x00 0x0b
+      0x0b
+      ::local-get index-local
+      ::local-get width-local
+      0x6a
+      ::local-set next-local
+      ::local-get next-local
+      ::local-get index-local
+      0x49 0x04 0x40 0x00 0x0b
+      ::local-get next-local
+      ::local-get length-local
+      0x4b 0x04 0x40 0x00 0x0b]
+     (continuation 1)
+     (continuation 2)
+     (continuation 3)
+     ;; Boundary rules exclude overlong triples/quads, surrogate code points,
+     ;; and scalar values above U+10FFFF.
+     (special-second 0xe0 0x4f 0xa0)
+     (special-second 0xed 0x4d 0x9f)
+     (special-second 0xf0 0x4f 0x90)
+     (special-second 0xf4 0x4d 0x8f)
+     [::local-get next-local
+      ::local-set index-local
+      0x0c 0x00
+      0x0b 0x0b])))
+
 (defn- emit-typed-function-body
   [function function-indices intrinsic-indices descriptor-indices literal-indices signatures
   {:keys [component-canonical-scalars? component-unchecked-bool-params]}]
@@ -883,7 +989,9 @@
                     0x3f 0x00
                     0x41 16 0x74
                     0x4b
-                    0x04 0x40 0x00 0x0b
+                    0x04 0x40 0x00 0x0b]
+                   (emit-valid-utf8 pointer-local length-local allocate!)
+                   [
                     ::local-get index-local
                     0x41 0x01 0x6a
                     ::local-set index-local
@@ -1114,7 +1222,9 @@
                                 ::local-get end-local
                                 0x3f 0x00
                                 0x41 16 0x74
-                                0x4b 0x04 0x40 0x00 0x0b])
+                                0x4b 0x04 0x40 0x00 0x0b]
+                               (emit-valid-utf8
+                                pointer-local length-local allocate!))
                             2 (concat
                                [::local-get item-local
                                 0x2d 0x00] (uleb union-payload-offset)
@@ -1176,7 +1286,9 @@
                                    ::local-get end-local
                                    0x3f 0x00
                                    0x41 16 0x74
-                                   0x4b 0x04 0x40 0x00 0x0b])
+                                   0x4b 0x04 0x40 0x00 0x0b]
+                                  (emit-valid-utf8
+                                   pointer-local length-local allocate!))
                                  :record
                                  (mapcat
                                   (fn [{field-offset :offset child :node}]
