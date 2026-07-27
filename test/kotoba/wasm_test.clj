@@ -223,6 +223,26 @@
                         7 pointer count fallback 16 1 1 12 4 4
                         2 1))
             :wasm32-wasi-kotoba-v1 opts)))
+      (is (bytes?
+           (wasm/emit-component-core
+            (assoc-in kir [:functions 0 :body]
+                      '(component-option-list-capability-count
+                        7 pointer count fallback 16 16 8 16 8 8
+                        3 2 8 12))
+            :wasm32-wasi-kotoba-v1 opts))
+          "kind 3 validates every declared inline-record bool offset")
+      (doseq [invalid-plan [[3 2 8 8]
+                            [3 2 8 16]
+                            [3 1]]]
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo #"item validation plan is invalid"
+             (wasm/emit-component-core
+              (assoc-in
+               kir [:functions 0 :body]
+               (apply list 'component-option-list-capability-count
+                      7 'pointer 'count 'fallback 16 16 8 16 8 8
+                      invalid-plan))
+              :wasm32-wasi-kotoba-v1 opts))))
       (finally
         (Files/deleteIfExists path)))))
 
