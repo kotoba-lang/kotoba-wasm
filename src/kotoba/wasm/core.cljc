@@ -631,7 +631,15 @@
               (when (and item-kind (not= 0 item-kind))
                 (let [max-total-bytes (first item-validation-args)
                       bool-count (first item-validation-args)
-                      bool-offsets (vec (rest item-validation-args))]
+                      bool-offsets (vec (rest item-validation-args))
+                      nested-total (first item-validation-args)
+                      nested-depth (second item-validation-args)
+                      nested-layout-words (vec (drop 2 item-validation-args))
+                      nested-layouts
+                      (when (and (integer? nested-depth)
+                                 (= (* 2 nested-depth)
+                                    (count nested-layout-words)))
+                        (mapv vec (partition 2 nested-layout-words)))]
                  (when-not
                   (case item-kind
                     1 (and (= 1 (count item-validation-args))
@@ -648,6 +656,23 @@
                                          (<= 0 %)
                                          (< % stride))
                                    bool-offsets))
+                    4 (and (integer? nested-total)
+                           (<= 0 nested-total 0x7fffffff)
+                           (integer? nested-depth)
+                           (<= 1 nested-depth 32)
+                           nested-layouts
+                           (every?
+                            (fn [[item-stride item-alignment]]
+                              (and (integer? item-stride)
+                                   (<= 1 item-stride 0x7fffffff)
+                                   (<= (* nested-total item-stride)
+                                       0xffffffff)
+                                   (integer? item-alignment)
+                                   (pos? item-alignment)
+                                   (zero? (bit-and item-alignment
+                                                   (dec item-alignment)))
+                                   (<= item-alignment 0x40000000)))
+                            nested-layouts))
                     false)
                   (throw
                    (ex-info
@@ -776,7 +801,111 @@
                      0x41 0x01 0x6a
                      ::local-set index-local
                      0x0c 0x00
-                     0x0b 0x0b]))))))
+                     0x0b 0x0b])
+
+                   4
+                   (let [total-local (allocate! 0x7f)]
+                     (letfn [(nested-node-code
+                               [pointer count level]
+                               (let [[item-stride item-alignment]
+                                     (nth nested-layouts level)
+                                     validated
+                                     (emit-component-list-validation
+                                      pointer count nested-total
+                                      item-stride item-alignment env)
+                                     next-total-local (allocate! 0x7f)
+                                     nested?
+                                     (< (inc level) nested-depth)
+                                     traversal
+                                     (when nested?
+                                       (let [nested-index-local (allocate! 0x7f)
+                                             nested-item-local (allocate! 0x7f)
+                                             nested-pointer-local (allocate! 0x7f)
+                                             nested-count-local (allocate! 0x7f)]
+                                         (concat
+                                          (i32-const 0)
+                                          [::local-set nested-index-local
+                                           0x02 0x40
+                                           0x03 0x40
+                                           ::local-get nested-index-local
+                                           ::local-get (:count-local validated)
+                                           0x4f
+                                           0x0d 0x01
+                                           ::local-get (:pointer-local validated)
+                                           ::local-get nested-index-local
+                                           0x41]
+                                          (sleb item-stride)
+                                          [0x6c 0x6a
+                                           ::local-set nested-item-local
+                                           ::local-get nested-item-local
+                                           0x28 0x02 0x00
+                                           ::local-set nested-pointer-local
+                                           ::local-get nested-item-local
+                                           0x28 0x02 0x04
+                                           ::local-set nested-count-local]
+                                          (nested-node-code
+                                           {:wasm-local nested-pointer-local}
+                                           {:wasm-local nested-count-local}
+                                           (inc level))
+                                          [::local-get nested-index-local
+                                           0x41 0x01 0x6a
+                                           ::local-set nested-index-local
+                                           0x0c 0x00
+                                           0x0b 0x0b])))]
+                                 (concat
+                                  (:code validated)
+                                  [::local-get total-local
+                                   ::local-get (:count-local validated)
+                                   0x6a
+                                   ::local-set next-total-local
+                                   ::local-get next-total-local
+                                   ::local-get total-local
+                                   0x49
+                                   0x04 0x40 0x00 0x0b
+                                   ::local-get next-total-local
+                                   0x41]
+                                  (sleb nested-total)
+                                  [0x4b
+                                   0x04 0x40 0x00 0x0b
+                                   ::local-get next-total-local
+                                   ::local-set total-local]
+                                  traversal)))]
+                       (let [outer-index-local (allocate! 0x7f)
+                             outer-item-local (allocate! 0x7f)
+                             nested-pointer-local (allocate! 0x7f)
+                             nested-count-local (allocate! 0x7f)]
+                         (concat
+                          [::local-get (:count-local list-validation)
+                           ::local-set total-local]
+                          (i32-const 0)
+                          [::local-set outer-index-local
+                           0x02 0x40
+                           0x03 0x40
+                           ::local-get outer-index-local
+                           ::local-get (:count-local list-validation)
+                           0x4f
+                           0x0d 0x01
+                           ::local-get (:pointer-local list-validation)
+                           ::local-get outer-index-local
+                           0x41]
+                          (sleb stride)
+                          [0x6c 0x6a
+                           ::local-set outer-item-local
+                           ::local-get outer-item-local
+                           0x28 0x02 0x00
+                           ::local-set nested-pointer-local
+                           ::local-get outer-item-local
+                           0x28 0x02 0x04
+                           ::local-set nested-count-local]
+                          (nested-node-code
+                           {:wasm-local nested-pointer-local}
+                           {:wasm-local nested-count-local}
+                           0)
+                          [::local-get outer-index-local
+                           0x41 0x01 0x6a
+                           ::local-set outer-index-local
+                           0x0c 0x00
+                           0x0b 0x0b])))))))))
             (emit-option-list-capability-count [args env]
               (let [[cap-id pointer count fallback max-items stride alignment
                      result-size payload-offset requested-result-alignment
