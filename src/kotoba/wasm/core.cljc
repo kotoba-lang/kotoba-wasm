@@ -630,10 +630,13 @@
               [list-validation stride item-kind max-total-bytes]
               (when (and item-kind (not= 0 item-kind))
                 (when-not
-                 (and (= 1 item-kind)
-                      (integer? max-total-bytes)
-                      (<= 0 max-total-bytes 0x7fffffff)
-                      (<= 8 stride))
+                 (case item-kind
+                   1 (and (integer? max-total-bytes)
+                          (<= 0 max-total-bytes 0x7fffffff)
+                          (<= 8 stride))
+                   2 (and (= 0 max-total-bytes)
+                          (<= 1 stride))
+                   false)
                   (throw
                    (ex-info
                     "component list item validation plan is invalid"
@@ -649,7 +652,9 @@
                       next-total-local (allocate! 0x7f)
                       end-local (allocate! 0x7f)
                       max-total max-total-bytes]
-                  (concat
+                  (case item-kind
+                   1
+                   (concat
                    ;; Canonical list<string>/list<keyword> items are
                    ;; standard32 (pointer,length) records at offsets 0/4.
                    ;; Visit every item even when the branch only observes the
@@ -701,7 +706,33 @@
                     0x41 0x01 0x6a
                     ::local-set index-local
                     0x0c 0x00
-                    0x0b 0x0b]))))
+                    0x0b 0x0b])
+
+                   2
+                   (concat
+                    ;; Canonical bool items are one byte. Validate every
+                    ;; active item even when the caller observes only count.
+                    (i32-const 0) [::local-set index-local]
+                    [0x02 0x40
+                     0x03 0x40
+                     ::local-get index-local
+                     ::local-get (:count-local list-validation)
+                     0x4f
+                     0x0d 0x01
+                     ::local-get (:pointer-local list-validation)
+                     ::local-get index-local
+                     0x41] (sleb stride)
+                    [0x6c 0x6a ::local-set item-local
+                     ::local-get item-local
+                     0x2d 0x00 0x00
+                     0x41 0x01
+                     0x4b
+                     0x04 0x40 0x00 0x0b
+                     ::local-get index-local
+                     0x41 0x01 0x6a
+                     ::local-set index-local
+                     0x0c 0x00
+                     0x0b 0x0b])))))
             (emit-option-list-capability-count [args env]
               (let [[cap-id pointer count fallback max-items stride alignment
                      result-size payload-offset requested-result-alignment
