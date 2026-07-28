@@ -2058,6 +2058,10 @@
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
                             [0x10 (get intrinsic-indices 'typed-string-contains) 0xad])
+                    (= op 'string-split-count)
+                    (concat (i32-const (descriptor-id :string))
+                            (emit* (first args) env) (emit* (second args) env)
+                            [0x10 (get intrinsic-indices 'typed-string-split-count) 0xad])
                     (= op 'string-code-point-at)
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
@@ -2728,6 +2732,7 @@
         has-string-substring? (uses-operation? functions '#{string-substring})
         has-string-replace? (uses-operation? functions '#{string-replace-all})
         has-string-contains? (uses-operation? functions '#{string-contains?})
+        has-string-split-count? (uses-operation? functions '#{string-split-count})
         has-string-code-point-at? (uses-operation? functions '#{string-code-point-at})
         has-string-fold-case? (uses-operation? functions '#{string-fold-case})
         has-keyword-name? (uses-operation? functions '#{keyword-name})
@@ -2776,6 +2781,9 @@
                              [0x60 4 0x7f 0x6f 0x6f 0x6f 1 0x6f]]])
                          (when has-string-contains?
                            [['typed-string-contains "kotoba:typed" "string-contains"
+                             [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]])
+                         (when has-string-split-count?
+                           [['typed-string-split-count "kotoba:typed" "string-split-count"
                              [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]])
                          (when has-string-code-point-at?
                            [['typed-string-code-point-at "kotoba:typed" "string-code-point-at"

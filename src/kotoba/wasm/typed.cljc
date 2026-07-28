@@ -388,6 +388,7 @@
                       typed-map-equal record-equal} op) :i64
         (= op 'string=?) :i64
         (= op 'string-contains?) :i64
+        (= op 'string-split-count) :i64
         (contains? '#{bool-not option-some? result-ok?
                       result-ok?-of option-some?-of typed-set-contains
                       typed-map-contains string-index-contains} op) :bool
