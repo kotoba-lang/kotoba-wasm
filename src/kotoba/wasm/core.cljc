@@ -2527,25 +2527,38 @@
             declarations (if (empty? @locals) [0]
                            (concat (uleb (count @locals))
                                    (mapcat (fn [type] [1 type]) @locals)))
-            charge [0x23 0 0x50 0x04 0x40 0x00 0x0b
-                    0x23 0 0x42 1 0x7d 0x24 0]
-            instructions (encode-local-operands (concat prefix charge body-code))
+            ;; T7.1: frontend loop helpers (`__kotoba_loop_N`) skip fuel charge
+            ;; so desugared loop/recur is zero-charge on wasm (matches KIR
+            ;; trampoline re-entry). Ordinary functions still charge 1/entry.
+            charge (when-not (loop-helper-name? (:name function))
+                     [0x23 0 0x50 0x04 0x40 0x00 0x0b
+                      0x23 0 0x42 1 0x7d 0x24 0])
+            instructions (encode-local-operands (concat prefix (or charge []) body-code))
             body (concat declarations instructions [0x0b])]
         (concat (uleb (count body)) body)))))
 
 (defn- function-type [{:keys [params]}]
   (concat [0x60] (uleb (count params)) (repeat (count params) 0x7e) [1 0x7e]))
 
+(defn- loop-helper-name?
+  "Frontend-synthesized loop helpers (T7.1 zero-charge on wasm)."
+  [sym]
+  (and (symbol? sym)
+       (nil? (namespace sym))
+       (boolean (re-matches #"__kotoba_loop_\d+" (name sym)))))
+
 (defn- function-body [function function-indices intrinsic-indices]
   (let [param-env (zipmap (:params function) (range))
         locals (local-count (:body function))
         declarations (if (zero? locals) [0] (concat [1] (uleb locals) [0x7e]))
-        ;; Every call consumes one unit from a module-private monotonic fuel
-        ;; global. It is never exported and cannot be replenished by guest code.
-        charge [0x23 0 0x50 0x04 0x40 0x00 0x0b ; global.get;eqz;if;unreachable;end
-                0x23 0 0x42 1 0x7d 0x24 0]       ; global.get;const 1;sub;global.set
+        ;; Every non-loop-helper call consumes one unit from a module-private
+        ;; monotonic fuel global. Loop helpers are zero-charge (T7.1).
+        charge (when-not (loop-helper-name? (:name function))
+                 [0x23 0 0x50 0x04 0x40 0x00 0x0b ; global.get;eqz;if;unreachable;end
+                  0x23 0 0x42 1 0x7d 0x24 0])       ; global.get;const 1;sub;global.set
         instructions (encode-local-operands
-                      (concat charge (emit-expr (:body function) param-env
+                      (concat (or charge [])
+                              (emit-expr (:body function) param-env
                                       {:function-indices function-indices
                                        :intrinsic-indices intrinsic-indices
                                        :next-local (count (:params function))})))
