@@ -717,6 +717,13 @@
       0x0c 0x00
       0x0b 0x0b])))
 
+(defn- loop-helper-name?
+  "Frontend-synthesized loop helpers (T7.1 zero-charge on wasm)."
+  [sym]
+  (and (symbol? sym)
+       (nil? (namespace sym))
+       (boolean (re-matches #"__kotoba_loop_\d+" (name sym)))))
+
 (defn- emit-typed-function-body
   [function function-indices intrinsic-indices descriptor-indices literal-indices signatures
   {:keys [component-canonical-scalars? component-unchecked-bool-params]}]
@@ -2539,13 +2546,6 @@
 
 (defn- function-type [{:keys [params]}]
   (concat [0x60] (uleb (count params)) (repeat (count params) 0x7e) [1 0x7e]))
-
-(defn- loop-helper-name?
-  "Frontend-synthesized loop helpers (T7.1 zero-charge on wasm)."
-  [sym]
-  (and (symbol? sym)
-       (nil? (namespace sym))
-       (boolean (re-matches #"__kotoba_loop_\d+" (name sym)))))
 
 (defn- function-body [function function-indices intrinsic-indices]
   (let [param-env (zipmap (:params function) (range))
