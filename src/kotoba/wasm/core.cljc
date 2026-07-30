@@ -240,11 +240,51 @@
   (into {} (map (fn [function] [(:name function) function]) functions)))
 
 (defn- typed-function-type [{:keys [param-types result]}]
-  ;; Host ABI: :bool crosses the export boundary as a real JS boolean
-  ;; (externref). Inside the module it is still the 0/1 i64 word.
-  (let [abi-type (fn [type] (if (= type :bool) 0x6f (typed/wasm-type type)))]
-    (concat [0x60] (uleb (count param-types)) (map abi-type param-types)
-            [1 (abi-type result)])))
+  ;; Profile-5 :bool is the 0/1 i64 word for every function body, including
+  ;; exports. Host-facing JS booleans are produced by thin export wrappers
+  ;; (see emit), not by changing the callee's result type — internal calls
+  ;; must keep seeing a word.
+  (concat [0x60] (uleb (count param-types)) (map typed/wasm-type param-types)
+          [1 (typed/wasm-type result)]))
+
+(defn- bool-export-abi-type
+  "Host-facing ABI for profile-5: :bool crosses as externref (JS boolean)."
+  [type]
+  (if (= type :bool) 0x6f (typed/wasm-type type)))
+
+(defn- needs-bool-export-wrapper?
+  "True when the host export ABI differs from the in-module word form of :bool."
+  [{:keys [param-types result]}]
+  (or (= :bool result)
+      (boolean (some #{:bool} param-types))))
+
+(defn- bool-export-wrapper-type
+  [{:keys [param-types result]}]
+  (concat [0x60] (uleb (count param-types)) (map bool-export-abi-type param-types)
+          [1 (bool-export-abi-type result)]))
+
+(defn- emit-bool-export-wrapper
+  "Thin export wrapper (ADR 0191 B): unbox :bool params, call the internal
+  i64-word function, box a :bool result to host boolean. No fuel charge —
+  the callee charges once."
+  [function internal-index intrinsic-indices]
+  (let [param-types (:param-types function)
+        param-code (mapcat
+                    (fn [i type]
+                      (if (= type :bool)
+                        (concat [0x20] (uleb i)
+                                [0x10] (uleb (get intrinsic-indices 'typed-bool-value))
+                                [0xad])
+                        (concat [0x20] (uleb i))))
+                    (range (count param-types))
+                    param-types)
+        call (concat [0x10] (uleb internal-index))
+        result-code (if (= :bool (:result function))
+                      (concat [0xa7]
+                              [0x10] (uleb (get intrinsic-indices 'typed-bool)))
+                      [])
+        body (concat [0] param-code call result-code [0x0b])]
+    (concat (uleb (count body)) body)))
 
 (defn- exact-i64 [text]
   #?(:clj (Long/parseLong text) :cljs (js/BigInt text)))
@@ -2214,14 +2254,21 @@
                             [0x10 (get intrinsic-indices 'typed-document-null)])
                     (contains? '#{document-bool document-i64 document-f64
                                   document-string document-keyword} op)
-                    (concat (i32-const (descriptor-id :document))
-                            (emit* (first args) env)
-                            [0x10 (get intrinsic-indices
-                                       ({'document-bool 'typed-document-bool
-                                         'document-i64 'typed-document-i64
-                                         'document-f64 'typed-document-f64
-                                         'document-string 'typed-document-string
-                                         'document-keyword 'typed-document-keyword} op))])
+                    (let [value-code (emit* (first args) env)
+                          ;; document-bool host takes a JS boolean (externref);
+                          ;; profile-5 words must box first.
+                          value-code (if (= op 'document-bool)
+                                       (concat value-code [0xa7]
+                                               [0x10 (get intrinsic-indices 'typed-bool)])
+                                       value-code)]
+                      (concat (i32-const (descriptor-id :document))
+                              value-code
+                              [0x10 (get intrinsic-indices
+                                         ({'document-bool 'typed-document-bool
+                                           'document-i64 'typed-document-i64
+                                           'document-f64 'typed-document-f64
+                                           'document-string 'typed-document-string
+                                           'document-keyword 'typed-document-keyword} op))]))
                     (= op 'document-vector)
                     (emit-builder :document -1 args (repeat (count args) :document) env)
                     (= op 'document-map)
@@ -2567,17 +2614,10 @@
                             (map-indexed vector (:param-types function))))
             body-code (doall (emit* (:body function) env))
             body-code (doall
-                       (cond
-                         ;; Profile-5 :bool results are words inside the module
-                         ;; and host booleans (externref) at the export boundary.
-                         (and (= :bool (:result function))
-                              (not component-canonical-scalars?))
-                         (concat body-code [0xa7]
-                                 [0x10 (get intrinsic-indices 'typed-bool)])
-                         (reference-type? (:result function))
+                       (if (reference-type? (:result function))
                          (concat (i32-const (descriptor-id (:result function))) body-code
                                  [0x10 (get intrinsic-indices 'typed-assert-ref)])
-                         :else body-code))
+                         body-code))
             declarations (if (empty? @locals) [0]
                            (concat (uleb (count @locals))
                                    (mapcat (fn [type] [1 type]) @locals)))
@@ -2963,10 +3003,26 @@
         shift (count imports)
         intrinsic-indices (into {} (map-indexed (fn [index [op]] [op index]) imports))
         indices (into {} (map-indexed (fn [i f] [(:name f) (+ i shift)]) functions))
+        ;; ADR 0191 B: dual-function export wrappers for :bool ABI. Internal
+        ;; callees stay i64 words; only the exported name points at a thin
+        ;; box/unbox wrapper. Skipped for component canonical-scalar paths
+        ;; (different ABI) and non-typed modules.
+        bool-wrapper-exports
+        (if (and typed?
+                 (not component-canonical-scalars?)
+                 (not component-standard32?))
+          (filterv needs-bool-export-wrapper? exported-functions)
+          [])
+        bool-wrapper-count (count bool-wrapper-exports)
+        bool-wrapper-fn-base (+ shift (count functions))
+        bool-wrapper-indices
+        (into {} (map-indexed (fn [i f]
+                                [(:name f) (+ bool-wrapper-fn-base i)])
+                              bool-wrapper-exports))
         component-type-count (if component-standard32?
                                (+ (count exported-functions) 2)
                                0)
-        component-type-base (+ (count functions) shift)
+        component-type-base (+ (count functions) shift bool-wrapper-count)
         post-type-indices (range component-type-base
                                  (+ component-type-base (count exported-functions)))
         realloc-type-index (+ component-type-base (count exported-functions))
@@ -2991,9 +3047,12 @@
                         (typed-function-type function))
                       (function-type function))))
                 functions)
-        types (concat (uleb (+ (count functions) shift component-type-count))
+        wrapper-types (mapcat bool-export-wrapper-type bool-wrapper-exports)
+        types (concat (uleb (+ (count functions) shift bool-wrapper-count
+                               component-type-count))
                       (mapcat #(nth % 3) imports)
                       function-types
+                      wrapper-types
                       component-types)
         import-sec (when (seq imports)
                      (concat (uleb shift)
@@ -3005,8 +3064,14 @@
                                    (+ (count exported-functions) 2)
                                    0)
         function-sec (concat
-                      (uleb (+ (count functions) component-function-count))
+                      (uleb (+ (count functions) bool-wrapper-count
+                               component-function-count))
                       (mapcat uleb (range shift (+ shift (count functions))))
+                      ;; wrapper functions reuse their own wrapper types,
+                      ;; which sit immediately after the KIR function types.
+                      (mapcat uleb (range (+ shift (count functions))
+                                          (+ shift (count functions)
+                                             bool-wrapper-count)))
                       (when component-standard32?
                         (mapcat uleb (concat post-type-indices
                                              [realloc-type-index initialize-type-index]))))
@@ -3035,9 +3100,14 @@
                                    (sleb component-arena-base) [0x0b]))))
         ;; Pure functions are exported with their source names. This makes
         ;; runtime parameters observable and testable without host authority.
-        component-function-base (+ shift (count functions))
+        ;; When a :bool ABI wrapper exists, the exported name points at the
+        ;; wrapper; internal call indices still target the i64-word body.
+        component-function-base (+ shift (count functions) bool-wrapper-count)
         realloc-function-index (+ component-function-base (count exported-functions))
         initialize-function-index (inc realloc-function-index)
+        export-fn-index (fn [function]
+                          (or (get bool-wrapper-indices (:name function))
+                              (get indices (:name function))))
         export-sec (if component-standard32?
                      (concat
                       (uleb (+ (* 2 (count exported-functions)) 3))
@@ -3055,13 +3125,14 @@
                      (concat (uleb (count exported-functions))
                              (mapcat (fn [function]
                                        (concat (name-bytes (name (:name function))) [0]
-                                               (uleb (get indices (:name function)))))
+                                               (uleb (export-fn-index function))))
                                      exported-functions)))
         descriptor-indices (when typed? (typed/descriptor-indices kir))
         literal-indices (when typed? (typed/literal-indices kir))
         signatures (when typed? (typed-function-signatures functions))
         code-sec (concat
-                  (uleb (+ (count functions) component-function-count))
+                  (uleb (+ (count functions) bool-wrapper-count
+                           component-function-count))
                   (mapcat #(if typed?
                              (emit-typed-function-body
                                                        % indices
@@ -3072,6 +3143,12 @@
                                                        opts)
                              (function-body % indices intrinsic-indices))
                           functions)
+                  (mapcat (fn [function]
+                            (emit-bool-export-wrapper
+                             function
+                             (get indices (:name function))
+                             intrinsic-indices))
+                          bool-wrapper-exports)
                   (when component-standard32?
                     (concat
                      (mapcat (fn [_] [2 0 0x0b]) exported-functions)
