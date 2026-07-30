@@ -20,5 +20,7 @@ slots (record/vector fields) continue to store sealed JS booleans. Reading a
 
 ## Non-claims
 
-This PR only **registers** the import. Emitter wiring (emit-get for `:bool`
-fields) lands with the profile-5 frontend so main stays consumer-green.
+The import is **gated** (`has-bool-value? false`) until emit-get for `:bool`
+fields wires it with language profile 5. Always-on registration would force
+every typed module to import `bool-value` and break hosts that have not landed
+the companion yet. Host-side `bool-value` (compiler browser-host) can land first.
