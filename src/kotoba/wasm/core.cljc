@@ -2829,8 +2829,6 @@
                                                string-index-contains string-index-get
                                                string-index-assoc})
         has-string-concat? (uses-operation? functions '#{string-concat})
-        ;; Set true when emit-get starts calling typed-bool-value (profile 5).
-        has-bool-value? false
         has-string-substring? (uses-operation? functions '#{string-substring})
         has-string-replace? (uses-operation? functions '#{string-replace-all})
         has-string-contains? (uses-operation? functions '#{string-contains?})
@@ -2874,16 +2872,10 @@
                          ;; The inverse. A `:bool` in a container slot is a real
                          ;; host boolean, so reading one back needs an unbox;
                          ;; `get-i64` cannot serve because the slot holds a
-                         ;; boolean, not an i64.
+                         ;; boolean, not an i64. Always-on for profile 5 (emit-get
+                         ;; uses typed-bool-value; host browser-host has bool-value).
                          ['typed-bool-value "kotoba:typed" "bool-value" [0x60 1 0x6f 1 0x7f]]
                          ['typed-equal "kotoba:typed" "equal" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]]
-                         ;; ADR 0191 A: unbox host boolean → i32. Gated until emit-get
-                         ;; for :bool fields wires it (profile 5). Always-on would
-                         ;; force every typed module to import bool-value and break
-                         ;; hosts that have not landed the companion yet.
-                         (when has-bool-value?
-                           [['typed-bool-value "kotoba:typed" "bool-value"
-                             [0x60 1 0x6f 1 0x7f]]])
                          (when has-string-concat?
                            [['typed-string-concat "kotoba:typed" "string-concat"
                              [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]])

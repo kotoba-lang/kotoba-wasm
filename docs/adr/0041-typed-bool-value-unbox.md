@@ -18,9 +18,9 @@ Profile 5 carries `:bool` as a plain 0/1 word inside modules, while aggregate
 slots (record/vector fields) continue to store sealed JS booleans. Reading a
 `:bool` field needs unboxing; writing already boxes via `typed-bool`.
 
-## Non-claims
+## Status note (2026-07-31)
 
-The import is **gated** (`has-bool-value? false`) until emit-get for `:bool`
-fields wires it with language profile 5. Always-on registration would force
-every typed module to import `bool-value` and break hosts that have not landed
-the companion yet. Host-side `bool-value` (compiler browser-host) can land first.
+The import is **always-on** for typed modules: emit-get for `:bool` fields
+uses `typed-bool-value`, and host `browser-host` / `bool-value` companions
+are landed (compiler#449/#451, wasm#42/#44). The old `has-bool-value? false`
+gate was dead code (duplicate of the base import list) and was removed.
