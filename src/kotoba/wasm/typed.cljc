@@ -205,13 +205,10 @@
 (defn requires-host-runtime?
   ([kir] (requires-host-runtime? kir {}))
   ([kir {:keys [native-bool?]}]
-   ;; i64, f32, f64 and bool are native Wasm scalars. `:bool` is a plain 0/1
-   ;; word in every profile (language profile 5) -- comparisons emit that word,
-   ;; so representing it as a sealed externref here made a `:bool` unusable in
-   ;; any module that also contains a keyword, string or record, which is
-   ;; nearly all real code. `native-bool?` is retained because the Component
-   ;; adapter path still asks the question explicitly.
-   (let [native-types (cond-> #{:i64 :f32 :f64 :bool} native-bool? (conj :bool))
+   ;; i64, f32, and f64 are native Wasm scalars. Canonical Component adapters
+   ;; may additionally opt into bool=i32; ordinary KIR v4 deliberately keeps
+   ;; bool as a sealed externref.
+   (let [native-types (cond-> #{:i64 :f32 :f64} native-bool? (conj :bool))
          signature-types (mapcat (fn [{:keys [param-types result]}]
                                    (conj (vec param-types) result))
                                  (:functions kir))
@@ -220,8 +217,9 @@
          ;; Actual guest keyword literals are independently present in the
          ;; body-only literal table, so discard only that metadata artefact.
          body-descriptors (disj (set (descriptor-table kir)) :keyword)
-         ;; A bool literal is the same 0/1 word, never a host value.
-         literals (remove #(= :bool (first %)) (literal-table kir))]
+         literals (if native-bool?
+                    (remove #(= :bool (first %)) (literal-table kir))
+                    (literal-table kir))]
      (or (some #(not (contains? native-types %)) signature-types)
          (some #(not (contains? native-types %)) body-descriptors)
          (seq literals)))))
@@ -314,19 +312,10 @@
                             contracts)))))))
 
 (defn reference-type? [type]
-  ;; `:bool` is a 0/1 word (see `wasm-type`), not a host reference.
-  (not (contains? #{:i64 :f32 :f64 :bool} type)))
+  (not (contains? #{:i64 :f32 :f64} type)))
 
-(defn wasm-type
-  "Wasm value type for a Kotoba value type.
-
-  `:bool` is an i64 word, not an externref: it is the same 0/1 the comparison
-  sequence produces (language profile 5). Keeping it sealed here made a `:bool`
-  unusable in any module that also contains a keyword, string or record — i.e.
-  nearly all real code — because the module enters the typed profile and the
-  bool result no longer matched the host-value call signature."
-  [type]
-  (case type :i64 0x7e :bool 0x7e :f32 0x7d :f64 0x7c 0x6f))
+(defn wasm-type [type]
+  (case type :i64 0x7e :f32 0x7d :f64 0x7c 0x6f))
 
 (declare infer-type)
 

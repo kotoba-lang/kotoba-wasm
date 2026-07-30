@@ -789,15 +789,12 @@
                           (into {} (map (fn [[key item]] [key (:type item)]) env))
                           signatures)]
                 (case type
-                  ;; `:bool` is the same 0/1 word as `:i64` (see
-                  ;; `typed/wasm-type`), so the condition is the same non-zero
-                  ;; test. It used to be tagged through the `typed-tag` host
-                  ;; intrinsic, which took an externref -- that is what made a
-                  ;; bool-returning call unusable as an `if` test in a typed
-                  ;; module.
-                  (:i64 :bool) (if (and component-canonical-scalars? (= :bool type))
-                                 (emit* form env)
-                                 (concat (emit* form env) [0x50 0x45]))
+                  :i64 (concat (emit* form env) [0x50 0x45])
+                  :bool (if component-canonical-scalars?
+                          (emit* form env)
+                          (concat (i32-const (descriptor-id :bool))
+                                  (emit* form env)
+                                  [0x10 (get intrinsic-indices 'typed-tag)]))
                   (throw (ex-info "typed Wasm condition must be bool or i64"
                                   {:phase :wasm-typed-lowering
                                    :type type :form form})))))
@@ -1682,15 +1679,8 @@
                 (into [0x42] (sleb form))
                 (and component-canonical-scalars? (boolean? form))
                 (i32-const (if form 1 0))
-                ;; A `true`/`false` literal is the same 0/1 word every other
-                ;; bool is (see `typed/wasm-type`) — not a host literal. The
-                ;; `not` / `if-not` / comparison-chain desugars produce these,
-                ;; so emitting them through `typed-literal` (an externref) made
-                ;; `(not …)` unusable in a typed module.
-                (boolean? form)
-                (into [0x42] (sleb (if form 1 0)))
-                (or (string? form) (keyword? form))
-                (let [literal [(if (string? form) :string :keyword)
+                (or (string? form) (keyword? form) (boolean? form))
+                (let [literal [(cond (string? form) :string (keyword? form) :keyword :else :bool)
                                (if (keyword? form) (str form) form)]]
                   (concat (i32-const (get literal-indices literal))
                           [0x10 (get intrinsic-indices 'typed-literal)]))
