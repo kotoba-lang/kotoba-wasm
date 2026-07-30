@@ -128,6 +128,12 @@
     ;; -- e.g. `when`'s trailing `0`); `sleb` above accepts either.
     #?(:clj (integer? form) :cljs (or (i64/bigint-value? form) (integer? form)))
     (into [0x42] (sleb form))                                    ; i64.const
+    ;; `:bool` is a plain 0/1 word in this profile -- comparisons already emit
+    ;; one, and `true`/`false` literals (produced by the `not` / `if-not` /
+    ;; comparison-chain desugars) emit the same word. No separate
+    ;; representation, so a boolean composes with every i64 operation.
+    (boolean? form)
+    (into [0x42] (sleb (if form 1 0)))                            ; i64.const 1/0
     (symbol? form) [::local-get (get env form)]                         ; local.get
     :else
     (let [[op & args] form]
