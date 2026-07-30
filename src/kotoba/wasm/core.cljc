@@ -2221,7 +2221,17 @@
                     (contains? '#{document-bool document-i64 document-f64
                                   document-string document-keyword} op)
                     (concat (i32-const (descriptor-id :document))
-                            (emit* (first args) env)
+                            ;; `document-bool` takes an externref -- the host
+                            ;; stores a real JS boolean in the document node and
+                            ;; validates it as one. A `:bool` is an i64 word
+                            ;; here, so box it, the same conversion an aggregate
+                            ;; element slot needs. Without this a literal
+                            ;; `(document-bool true)` emitted `i64.const 1` into
+                            ;; a call expecting externref and the module failed
+                            ;; to compile:
+                            ;;   call[1] expected type externref, found i64.const
+                            (cond-> (emit* (first args) env)
+                              (= op 'document-bool) (box-bool))
                             [0x10 (get intrinsic-indices
                                        ({'document-bool 'typed-document-bool
                                          'document-i64 'typed-document-i64
@@ -2948,6 +2958,33 @@
         shift (count imports)
         intrinsic-indices (into {} (map-indexed (fn [index [op]] [op index]) imports))
         indices (into {} (map-indexed (fn [i f] [(:name f) (+ i shift)]) functions))
+        ;; A `:bool` is a 0/1 i64 word inside the module -- that is what makes
+        ;; and/or/not, if tests, locals and branches typecheck -- but the value
+        ;; that leaves the module has to be a real JS boolean: the reference
+        ;; (KIR), restricted-ESM and wasm corpora all check that the three
+        ;; targets return the SAME value, and the wasm side is called as
+        ;; `h.instance.exports.remove()` on the raw instance, so no host-side
+        ;; wrapper can convert it.
+        ;;
+        ;; So box at the export boundary and only there. Each exported function
+        ;; whose declared result is `:bool` gets a thin wrapper that calls it,
+        ;; narrows the word and boxes it through `typed-bool`; the export points
+        ;; at the wrapper. `:bool` parameters unbox the same way on the way in.
+        ;; Internal call sites still call the inner function and still see a
+        ;; word, so nothing about the module's own typing changes.
+        ;;
+        ;; The component path is excluded: it already lowers `:bool` to i32 via
+        ;; `emitted-wasm-type` and has its own export shape.
+        bool-export-wrappers
+        (if (and typed? (not component-standard32?) (not component-canonical-scalars?))
+          (filterv (fn [{:keys [result param-types]}]
+                     (or (= :bool result) (some #{:bool} param-types)))
+                   exported-functions)
+          [])
+        wrapper-count (count bool-export-wrappers)
+        wrapper-base (+ shift (count functions))
+        wrapper-indices (into {} (map-indexed (fn [i f] [(:name f) (+ wrapper-base i)])
+                                              bool-export-wrappers))
         component-type-count (if component-standard32?
                                (+ (count exported-functions) 2)
                                0)
@@ -2976,9 +3013,19 @@
                         (typed-function-type function))
                       (function-type function))))
                 functions)
-        types (concat (uleb (+ (count functions) shift component-type-count))
+        ;; Same parameter types as the inner function, except that a `:bool`
+        ;; parameter is an externref here (the caller hands us a host boolean),
+        ;; and the result is an externref whenever the inner result is `:bool`.
+        wrapper-types
+        (mapcat (fn [{:keys [param-types result]}]
+                  (concat [0x60] (uleb (count param-types))
+                          (map #(if (= :bool %) 0x6f (typed/wasm-type %)) param-types)
+                          [1 (if (= :bool result) 0x6f (typed/wasm-type result))]))
+                bool-export-wrappers)
+        types (concat (uleb (+ (count functions) wrapper-count shift component-type-count))
                       (mapcat #(nth % 3) imports)
                       function-types
+                      wrapper-types
                       component-types)
         import-sec (when (seq imports)
                      (concat (uleb shift)
@@ -2990,8 +3037,8 @@
                                    (+ (count exported-functions) 2)
                                    0)
         function-sec (concat
-                      (uleb (+ (count functions) component-function-count))
-                      (mapcat uleb (range shift (+ shift (count functions))))
+                      (uleb (+ (count functions) wrapper-count component-function-count))
+                      (mapcat uleb (range shift (+ shift (count functions) wrapper-count)))
                       (when component-standard32?
                         (mapcat uleb (concat post-type-indices
                                              [realloc-type-index initialize-type-index]))))
@@ -3040,13 +3087,35 @@
                      (concat (uleb (count exported-functions))
                              (mapcat (fn [function]
                                        (concat (name-bytes (name (:name function))) [0]
-                                               (uleb (get indices (:name function)))))
+                                               ;; the boxing wrapper when this
+                                               ;; export touches :bool, else the
+                                               ;; function itself
+                                               (uleb (or (get wrapper-indices (:name function))
+                                                         (get indices (:name function))))))
                                      exported-functions)))
         descriptor-indices (when typed? (typed/descriptor-indices kir))
         literal-indices (when typed? (typed/literal-indices kir))
         signatures (when typed? (typed-function-signatures functions))
+        wrapper-bodies
+        (mapcat
+         (fn [{:keys [name param-types result]}]
+           (let [args (mapcat (fn [type index]
+                                (concat [0x20] (uleb index)
+                                        ;; host boolean -> i32 -> i64 word
+                                        (when (= :bool type)
+                                          [0x10 (get intrinsic-indices 'typed-bool-value) 0xad])))
+                              param-types (range))
+                 call [0x10]
+                 body (concat args call (uleb (get indices name))
+                              ;; i64 word -> i32 -> host boolean
+                              (when (= :bool result)
+                                [0xa7 0x10 (get intrinsic-indices 'typed-bool)])
+                              [0x0b])
+                 entry (concat [0] body)]
+             (concat (uleb (count entry)) entry)))
+         bool-export-wrappers)
         code-sec (concat
-                  (uleb (+ (count functions) component-function-count))
+                  (uleb (+ (count functions) wrapper-count component-function-count))
                   (mapcat #(if typed?
                              (emit-typed-function-body
                                                        % indices
@@ -3057,6 +3126,7 @@
                                                        opts)
                              (function-body % indices intrinsic-indices))
                           functions)
+                  wrapper-bodies
                   (when component-standard32?
                     (concat
                      (mapcat (fn [_] [2 0 0x0b]) exported-functions)

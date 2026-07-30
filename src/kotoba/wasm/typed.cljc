@@ -224,7 +224,26 @@
          literals (remove #(= :bool (first %)) (literal-table kir))]
      (or (some #(not (contains? native-types %)) signature-types)
          (some #(not (contains? native-types %)) body-descriptors)
-         (seq literals)))))
+         (seq literals)
+         ;; A `:bool` is a word internally, but the value that LEAVES the module
+         ;; is a real host boolean -- `kotoba.wasm.core` emits a boxing wrapper
+         ;; for every export whose signature mentions `:bool`, and that wrapper
+         ;; calls `typed-bool` / `typed-bool-value`. So such a module genuinely
+         ;; depends on the host runtime, and saying otherwise left the wrapper
+         ;; with a nil intrinsic index (an NPE while assembling the byte
+         ;; stream). Exports only: an internal bool never crosses a boundary.
+         ;;
+         ;; Not under `native-bool?`: that is the canonical-scalar Component
+         ;; adapter, which lowers `:bool` to i32 in the signature itself and
+         ;; emits no wrapper. Asking it for a host value would make every
+         ;; bool-exporting component fail with "canonical scalar Component
+         ;; adapter requires a host value".
+         (and (not native-bool?)
+          (let [exported (set (or (:exports kir) (map :name (:functions kir))))]
+           (some (fn [{:keys [name param-types result]}]
+                   (and (contains? exported name)
+                        (or (= :bool result) (some #{:bool} param-types))))
+                 (:functions kir))))))))
 
 (defn- literal-walk [form found]
   (cond
