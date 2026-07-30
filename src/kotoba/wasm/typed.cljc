@@ -312,10 +312,13 @@
                             contracts)))))))
 
 (defn reference-type? [type]
-  (not (contains? #{:i64 :f32 :f64} type)))
+  ;; Profile-5 :bool is a 0/1 i64 word inside modules, not a sealed ref.
+  (not (contains? #{:i64 :f32 :f64 :bool} type)))
 
 (defn wasm-type [type]
-  (case type :i64 0x7e :f32 0x7d :f64 0x7c 0x6f))
+  ;; :bool is the 0/1 i64 word. Export ABI boxing to host boolean is the
+  ;; emitter's job at function boundaries, not a different local type.
+  (case type :i64 0x7e :f32 0x7d :f64 0x7c :bool 0x7e 0x6f))
 
 (declare infer-type)
 
