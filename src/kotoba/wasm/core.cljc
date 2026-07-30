@@ -240,8 +240,11 @@
   (into {} (map (fn [function] [(:name function) function]) functions)))
 
 (defn- typed-function-type [{:keys [param-types result]}]
-  (concat [0x60] (uleb (count param-types)) (map typed/wasm-type param-types)
-          [1 (typed/wasm-type result)]))
+  ;; Host ABI: :bool crosses the export boundary as a real JS boolean
+  ;; (externref). Inside the module it is still the 0/1 i64 word.
+  (let [abi-type (fn [type] (if (= type :bool) 0x6f (typed/wasm-type type)))]
+    (concat [0x60] (uleb (count param-types)) (map abi-type param-types)
+            [1 (abi-type result)])))
 
 (defn- exact-i64 [text]
   #?(:clj (Long/parseLong text) :cljs (js/BigInt text)))
@@ -759,26 +762,50 @@
         env (into {} (map-indexed (fn [index [name type]]
                                     [name {:index index :type type}])
                                   (map vector (:params function) (:param-types function))))]
-    (letfn [(emit-builder [type tag item-forms item-types env]
+    (letfn [;; A `:bool` is a 0/1 i64 word inside the module but a real JS
+            ;; boolean in a container slot: the host validates every `bool` slot
+            ;; with `typeof value === "boolean"` and rejects anything else as
+            ;; "typed boolean is invalid". So a bool crossing into or out of an
+            ;; aggregate is boxed, exactly like it is at the export boundary.
+            ;;
+            ;; Without this, `(hetero-vector [:vector [:i64 :string :bool]] 7
+            ;; "safe" true)` did not compute a wrong answer -- it failed to
+            ;; VALIDATE, because `scalar-suffix` sends `:bool` down the "ref"
+            ;; path and the word on the stack is not an externref.
+            (box-bool [code]
+              ;; i64 word -> i32 -> host boolean (externref)
+              (concat code [0xa7] [0x10 (get intrinsic-indices 'typed-bool)]))
+            (unbox-bool [code]
+              ;; host boolean (externref) -> i32 -> i64 word
+              (concat code [0x10 (get intrinsic-indices 'typed-bool-value)] [0xad]))
+            (emit-builder [type tag item-forms item-types env]
               (let [initial (concat (i32-const (descriptor-id type)) (i32-const tag)
                                     [0x10 (get intrinsic-indices 'typed-new)])
                     pushed (reduce (fn [code [item item-type]]
-                                     (concat code (emit* item env)
-                                             [0x10 (get intrinsic-indices
-                                                        (symbol (str "typed-push-"
-                                                                     (scalar-suffix item-type))))]))
+                                     (let [value (emit* item env)
+                                           value (if (= :bool item-type)
+                                                   (box-bool value)
+                                                   value)]
+                                       (concat code value
+                                               [0x10 (get intrinsic-indices
+                                                          (symbol (str "typed-push-"
+                                                                       (scalar-suffix item-type))))])))
                                    initial (map vector item-forms item-types))]
                 (concat (i32-const (descriptor-id type)) pushed
                         [0x10 (get intrinsic-indices 'typed-seal)])))
             (emit-get [type value-form index item-type env]
-              (concat (i32-const (descriptor-id type)) (emit* value-form env)
-                      (i32-const index)
-                      [0x10 (get intrinsic-indices
-                                 (symbol (str "typed-get-" (scalar-suffix item-type))))]))
+              (let [code (concat (i32-const (descriptor-id type)) (emit* value-form env)
+                                 (i32-const index)
+                                 [0x10 (get intrinsic-indices
+                                            (symbol (str "typed-get-" (scalar-suffix item-type))))])]
+                (if (= :bool item-type) (unbox-bool code) code)))
             (emit-bool [code]
+              ;; `code` leaves an i32 predicate result. Profile-5 :bool is a
+              ;; 0/1 i64 word inside the module — widen, do not box. Boxing is
+              ;; only for aggregate slots and the export boundary.
               (if component-canonical-scalars?
                 code
-                (concat code [0x10 (get intrinsic-indices 'typed-bool)])))
+                (concat code [0xad])))
             (emit-equal [type left right env]
               (concat (i32-const (descriptor-id type))
                       (emit* left env) (emit* right env)
@@ -790,11 +817,10 @@
                           signatures)]
                 (case type
                   :i64 (concat (emit* form env) [0x50 0x45])
+                  ;; Profile-5 :bool is the 0/1 i64 word — same test as :i64.
                   :bool (if component-canonical-scalars?
                           (emit* form env)
-                          (concat (i32-const (descriptor-id :bool))
-                                  (emit* form env)
-                                  [0x10 (get intrinsic-indices 'typed-tag)]))
+                          (concat (emit* form env) [0x50 0x45]))
                   (throw (ex-info "typed Wasm condition must be bool or i64"
                                   {:phase :wasm-typed-lowering
                                    :type type :form form})))))
@@ -1679,8 +1705,11 @@
                 (into [0x42] (sleb form))
                 (and component-canonical-scalars? (boolean? form))
                 (i32-const (if form 1 0))
-                (or (string? form) (keyword? form) (boolean? form))
-                (let [literal [(cond (string? form) :string (keyword? form) :keyword :else :bool)
+                ;; Profile-5 :bool is a 0/1 i64 word — never a sealed typed literal.
+                (boolean? form)
+                (into [0x42] (sleb (if form 1 0)))
+                (or (string? form) (keyword? form))
+                (let [literal [(if (string? form) :string :keyword)
                                (if (keyword? form) (str form) form)]]
                   (concat (i32-const (get literal-indices literal))
                           [0x10 (get intrinsic-indices 'typed-literal)]))
@@ -2526,6 +2555,11 @@
                                      (= :bool type)
                                      (not (contains? unchecked-bool-param-indices index)))
                                 [::local-get index 0x41 1 0x4b 0x04 0x40 0x00 0x0b]
+                                ;; :bool is a word inside the module. Do not treat
+                                ;; it as a reference-typed param (assert-ref would
+                                ;; see an i64). Param ABI boxing is a follow-on.
+                                (= :bool type)
+                                nil
                                 (reference-type? type)
                                 (concat (i32-const (descriptor-id type)) [::local-get index]
                                         [0x10 (get intrinsic-indices 'typed-assert-ref)
@@ -2533,10 +2567,17 @@
                             (map-indexed vector (:param-types function))))
             body-code (doall (emit* (:body function) env))
             body-code (doall
-                       (if (reference-type? (:result function))
+                       (cond
+                         ;; Profile-5 :bool results are words inside the module
+                         ;; and host booleans (externref) at the export boundary.
+                         (and (= :bool (:result function))
+                              (not component-canonical-scalars?))
+                         (concat body-code [0xa7]
+                                 [0x10 (get intrinsic-indices 'typed-bool)])
+                         (reference-type? (:result function))
                          (concat (i32-const (descriptor-id (:result function))) body-code
                                  [0x10 (get intrinsic-indices 'typed-assert-ref)])
-                         body-code))
+                         :else body-code))
             declarations (if (empty? @locals) [0]
                            (concat (uleb (count @locals))
                                    (mapcat (fn [type] [1 type]) @locals)))
@@ -2790,6 +2831,11 @@
                          ['typed-get-ref "kotoba:typed" "get-ref" [0x60 3 0x7f 0x6f 0x7f 1 0x6f]]
                          ['typed-count "kotoba:typed" "count" [0x60 2 0x7f 0x6f 1 0x7e]]
                          ['typed-bool "kotoba:typed" "bool" [0x60 1 0x7f 1 0x6f]]
+                         ;; The inverse. A `:bool` in a container slot is a real
+                         ;; host boolean, so reading one back needs an unbox;
+                         ;; `get-i64` cannot serve because the slot holds a
+                         ;; boolean, not an i64.
+                         ['typed-bool-value "kotoba:typed" "bool-value" [0x60 1 0x6f 1 0x7f]]
                          ['typed-equal "kotoba:typed" "equal" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]]
                          ;; ADR 0191 A: unbox host boolean → i32. Gated until emit-get
                          ;; for :bool fields wires it (profile 5). Always-on would
