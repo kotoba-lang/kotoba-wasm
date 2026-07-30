@@ -776,9 +776,13 @@
                       [0x10 (get intrinsic-indices
                                  (symbol (str "typed-get-" (scalar-suffix item-type))))]))
             (emit-bool [code]
+              ;; `code` leaves an i32 predicate result on the stack. `:bool` is
+              ;; a 0/1 i64 word (see `typed/wasm-type`), so widen it rather than
+              ;; boxing it through the `typed-bool` host intrinsic, which
+              ;; returned an externref and no longer matches the bool type.
               (if component-canonical-scalars?
                 code
-                (concat code [0x10 (get intrinsic-indices 'typed-bool)])))
+                (concat code [0xad])))
             (emit-equal [type left right env]
               (concat (i32-const (descriptor-id type))
                       (emit* left env) (emit* right env)
