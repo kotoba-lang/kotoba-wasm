@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - run: clojure -M:test
+
+  # This repo's own suite passing is not enough: it is a library whose only
+  # consumer is kotoba-lang/compiler, and a change can be green here while
+  # breaking the compiler's dual-backend conformance. That happened on
+  # 2026-07-30 (kotoba-wasm f4d7afb: green here, 47/52 there), which is why
+  # this job exists.
+  consumer-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: dep
+      - name: Check out the consumer
+        run: git clone --depth 1 https://github.com/kotoba-lang/compiler compiler
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Compiler dual-backend conformance against this checkout
+        working-directory: compiler
+        run: |
+          clojure -Sdeps "{:aliases {:dep {:override-deps {io.github.kotoba-lang/${{ github.event.repository.name }} {:local/root \"../dep\"}}}}}" \
+            -M:dep:conformance
