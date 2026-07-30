@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      # The suite shells out to the pinned official tooling for real encode and
+      # execute checks. Without them 24 tests error out instead of failing --
+      # which is exactly how the first CI run on this branch looked. They had
+      # only ever passed because the developer machine happened to have both on
+      # PATH; nothing in the repo installed or checked for them.
+      # wasm-tools is version-pinned in src/kotoba/wasm/tools.clj
+      # (assert-version!), so pin it here to the same 1.243.0.
+      - name: Install pinned wasm-tools and wasmtime
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.wasm-bin"
+          curl -sSfL https://github.com/bytecodealliance/wasm-tools/releases/download/v1.243.0/wasm-tools-1.243.0-x86_64-linux.tar.gz \
+            | tar -xz -C "$HOME/.wasm-bin" --strip-components=1 --wildcards '*/wasm-tools'
+          curl -sSfL https://github.com/bytecodealliance/wasmtime/releases/download/v42.0.1/wasmtime-v42.0.1-x86_64-linux.tar.xz \
+            | tar -xJ -C "$HOME/.wasm-bin" --strip-components=1 --wildcards '*/wasmtime'
+          echo "$HOME/.wasm-bin" >> "$GITHUB_PATH"
+      - run: wasm-tools --version && wasmtime --version
+      - run: clojure -M:test
+
+  # This repo's own suite passing is not enough: it is a library whose only
+  # consumer is kotoba-lang/compiler, and a change can be green here while
+  # breaking the compiler's dual-backend conformance. That happened on
+  # 2026-07-30 (kotoba-wasm f4d7afb: green here, 47/52 there), which is why
+  # this job exists.
+  consumer-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: dep
+      - name: Check out the consumer
+        run: git clone --depth 1 https://github.com/kotoba-lang/compiler compiler
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: DeLaGuardo/setup-clojure@13.4
+        with:
+          cli: latest
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Compiler dual-backend conformance against this checkout
+        working-directory: compiler
+        run: |
+          clojure -Sdeps "{:aliases {:dep {:override-deps {io.github.kotoba-lang/${{ github.event.repository.name }} {:local/root \"../dep\"}}}}}" \
+            -M:dep:conformance
