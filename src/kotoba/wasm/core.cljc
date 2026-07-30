@@ -2788,6 +2788,8 @@
                          ['typed-get-ref "kotoba:typed" "get-ref" [0x60 3 0x7f 0x6f 0x7f 1 0x6f]]
                          ['typed-count "kotoba:typed" "count" [0x60 2 0x7f 0x6f 1 0x7e]]
                          ['typed-bool "kotoba:typed" "bool" [0x60 1 0x7f 1 0x6f]]
+                         ;; ADR 0191 A: externref JS boolean → i32 0/1 word
+                         ['typed-bool-value "kotoba:typed" "bool-value" [0x60 1 0x6f 1 0x7f]]
                          ['typed-equal "kotoba:typed" "equal" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]]
                          (when has-string-concat?
                            [['typed-string-concat "kotoba:typed" "string-concat"
