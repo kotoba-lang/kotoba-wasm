@@ -456,6 +456,7 @@
         (= op 'typed-map-get) [:option (nth (first args) 2)]
         (= op 'typed-map-entry-at)
         [:option [:vector [(second (first args)) (nth (first args) 2)]]]
+        (= op 'typed-set-nth) (second (first args))
         (= op 'hetero-vector-at) (nth (second (first args)) (nth args 2))
         (= op 'record-get)
         (let [[type _ field] args]
