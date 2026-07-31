@@ -2531,6 +2531,15 @@
                     (let [[type value] args]
                       (concat (i32-const (descriptor-id type)) (emit* value env)
                               [0x10 (get intrinsic-indices 'typed-count)]))
+                    (= op 'typed-set-nth)
+                    (let [[type value index] args
+                          item-type (second type)
+                          intrinsic (if (= item-type :i64)
+                                      'typed-set-nth-i64
+                                      'typed-set-nth-ref)]
+                      (concat (i32-const (descriptor-id type)) (emit* value env)
+                              (emit* index env)
+                              [0x10 (get intrinsic-indices intrinsic)]))
                     (= op 'typed-map-count)
                     (let [[type value] args]
                       (concat (i32-const (descriptor-id type)) (emit* value env)
@@ -2916,6 +2925,8 @@
                          ['typed-set-op-ref "kotoba:typed" "set-op-ref" [0x60 4 0x7f 0x6f 0x7f 0x6f 1 0x6f]]
                          ['typed-set-contains-i64 "kotoba:typed" "set-contains-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x7f]]
                          ['typed-set-contains-ref "kotoba:typed" "set-contains-ref" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]
+                         ['typed-set-nth-i64 "kotoba:typed" "set-nth-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x7e]]
+                         ['typed-set-nth-ref "kotoba:typed" "set-nth-ref" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                          ['typed-map-contains-i64 "kotoba:typed" "map-contains-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x7f]]
                          ['typed-map-contains-ref "kotoba:typed" "map-contains-ref" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]
                          ['typed-map-get-i64 "kotoba:typed" "map-get-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
