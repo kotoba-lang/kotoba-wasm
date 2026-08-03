@@ -148,12 +148,12 @@
     (reduce (fn [result item] (walk item result)) (conj found :disjoint-set-i64) value)
     (and (seq? value)
          (contains? '#{document-null document-bool document-i64 document-f64
-                      document-string document-keyword document-vector document-map
+                      document-string document-keyword document-symbol document-vector document-map
                       document-count document-kind document-vector-at document-map-entry-at document-vector-assoc
                       document-vector-conj document-vector-drop document-vector-remove
                       document-equal? document-sha256 document-print document-read
                       document-edn-print document-edn-read document-contains document-get document-assoc
-                      document-dissoc document-merge document-string-value document-keyword-value
+                      document-dissoc document-merge document-string-value document-keyword-value document-symbol-value
                       document-bool-value document-i64-value document-f64-value}
                     (first value)))
     (reduce (fn [result item] (walk item result))
@@ -421,7 +421,7 @@
         (= op 'disjoint-set-i64-new) :disjoint-set-i64
         (= op 'disjoint-set-i64-union) [:option :disjoint-set-i64]
         (contains? '#{document-null document-bool document-i64 document-f64
-                      document-string document-keyword document-vector document-map
+                      document-string document-keyword document-symbol document-vector document-map
                       document-vector-assoc document-vector-conj document-vector-drop
                       document-vector-remove document-map-entry-at
                       document-assoc document-dissoc document-merge} op) :document
@@ -433,6 +433,7 @@
         (= op 'document-edn-read) :document
         (= op 'document-string-value) [:option :string]
         (= op 'document-keyword-value) [:option :keyword]
+        (= op 'document-symbol-value) [:option :symbol]
         (= op 'document-bool-value) [:option :bool]
         (= op 'document-i64-value) [:option :i64]
         (= op 'document-f64-value) [:option :f64]

@@ -2253,7 +2253,7 @@
                     (concat (i32-const (descriptor-id :document))
                             [0x10 (get intrinsic-indices 'typed-document-null)])
                     (contains? '#{document-bool document-i64 document-f64
-                                  document-string document-keyword} op)
+                                  document-string document-keyword document-symbol} op)
                     (let [value-code (emit* (first args) env)
                           ;; document-bool host takes a JS boolean (externref);
                           ;; profile-5 words must box first.
@@ -2268,7 +2268,8 @@
                                            'document-i64 'typed-document-i64
                                            'document-f64 'typed-document-f64
                                            'document-string 'typed-document-string
-                                           'document-keyword 'typed-document-keyword} op))]))
+                                           'document-keyword 'typed-document-keyword
+                                           'document-symbol 'typed-document-symbol} op))]))
                     (= op 'document-vector)
                     (emit-builder :document -1 args (repeat (count args) :document) env)
                     (= op 'document-map)
@@ -2320,7 +2321,7 @@
                             [0x10 (get intrinsic-indices 'typed-document-edn-read)])
                     (contains? '#{document-get document-assoc document-dissoc
                                   document-merge document-string-value document-bool-value
-                                  document-keyword-value document-i64-value document-f64-value} op)
+                                  document-keyword-value document-symbol-value document-i64-value document-f64-value} op)
                     (concat (i32-const (descriptor-id :document))
                             (mapcat #(emit* % env) args)
                             [0x10 (get intrinsic-indices
@@ -2330,6 +2331,7 @@
                                          'document-merge 'typed-document-merge
                                          'document-string-value 'typed-document-string-value
                                          'document-keyword-value 'typed-document-keyword-value
+                                         'document-symbol-value 'typed-document-symbol-value
                                          'document-bool-value 'typed-document-bool-value
                                          'document-i64-value 'typed-document-i64-value
                                          'document-f64-value 'typed-document-f64-value} op))])
@@ -2856,13 +2858,13 @@
                                                disjoint-set-i64-union})
         has-document? (uses-operation? functions
                                        '#{document-null document-bool document-i64 document-f64
-                                          document-string document-keyword document-vector document-map
+                                          document-string document-keyword document-symbol document-vector document-map
                                           document-count document-kind document-vector-at document-map-entry-at document-vector-assoc
                                           document-vector-conj document-vector-drop document-vector-remove
                                           document-equal? document-sha256 document-print document-read
                                           document-edn-print document-edn-read document-contains document-get document-assoc
                                           document-dissoc document-merge document-string-value
-                                          document-keyword-value document-bool-value
+                                          document-keyword-value document-symbol-value document-bool-value
                                           document-i64-value document-f64-value})
         has-keyword-from-string? (uses-operation? functions '#{keyword-from-string})
         has-symbol-from-string? (uses-operation? functions '#{symbol})
@@ -2960,6 +2962,7 @@
                             ['typed-document-f64 "kotoba:typed" "document-f64" [0x60 2 0x7f 0x7c 1 0x6f]]
                             ['typed-document-string "kotoba:typed" "document-string" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-keyword "kotoba:typed" "document-keyword" [0x60 2 0x7f 0x6f 1 0x6f]]
+                            ['typed-document-symbol "kotoba:typed" "document-symbol" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-kind "kotoba:typed" "document-kind" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-sha256 "kotoba:typed" "document-sha256" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-print "kotoba:typed" "document-print" [0x60 2 0x7f 0x6f 1 0x6f]]
@@ -2979,6 +2982,7 @@
                             ['typed-document-merge "kotoba:typed" "document-merge" [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]
                             ['typed-document-string-value "kotoba:typed" "document-string-value" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-keyword-value "kotoba:typed" "document-keyword-value" [0x60 2 0x7f 0x6f 1 0x6f]]
+                            ['typed-document-symbol-value "kotoba:typed" "document-symbol-value" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-bool-value "kotoba:typed" "document-bool-value" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-i64-value "kotoba:typed" "document-i64-value" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-f64-value "kotoba:typed" "document-f64-value" [0x60 2 0x7f 0x6f 1 0x6f]]])
