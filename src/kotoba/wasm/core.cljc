@@ -2312,6 +2312,12 @@
                     (= op 'document-read)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
                             [0x10 (get intrinsic-indices 'typed-document-read)])
+                    (= op 'document-edn-print)
+                    (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
+                            [0x10 (get intrinsic-indices 'typed-document-edn-print)])
+                    (= op 'document-edn-read)
+                    (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
+                            [0x10 (get intrinsic-indices 'typed-document-edn-read)])
                     (contains? '#{document-get document-assoc document-dissoc
                                   document-merge document-string-value document-bool-value
                                   document-keyword-value document-i64-value document-f64-value} op)
@@ -2853,7 +2859,8 @@
                                           document-string document-keyword document-vector document-map
                                           document-count document-kind document-vector-at document-map-entry-at document-vector-assoc
                                           document-vector-conj document-vector-drop document-vector-remove
-                                          document-equal? document-sha256 document-print document-read document-contains document-get document-assoc
+                                          document-equal? document-sha256 document-print document-read
+                                          document-edn-print document-edn-read document-contains document-get document-assoc
                                           document-dissoc document-merge document-string-value
                                           document-keyword-value document-bool-value
                                           document-i64-value document-f64-value})
@@ -2957,6 +2964,8 @@
                             ['typed-document-sha256 "kotoba:typed" "document-sha256" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-print "kotoba:typed" "document-print" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-read "kotoba:typed" "document-read" [0x60 2 0x7f 0x6f 1 0x6f]]
+                            ['typed-document-edn-print "kotoba:typed" "document-edn-print" [0x60 2 0x7f 0x6f 1 0x6f]]
+                            ['typed-document-edn-read "kotoba:typed" "document-edn-read" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-vector-at "kotoba:typed" "document-vector-at" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                             ['typed-document-map-entry-at "kotoba:typed" "document-map-entry-at" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                             ['typed-document-vector-assoc "kotoba:typed" "document-vector-assoc" [0x60 4 0x7f 0x6f 0x7e 0x6f 1 0x6f]]
