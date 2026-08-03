@@ -1780,6 +1780,15 @@
                       (concat (emit-test test env)
                               [0x04 (wasm-type result-type)]
                               (emit* then env) [0x05] (emit* else env) [0x0b]))
+                    ;; Wasm `drop` is polymorphic, including externref. Typed
+                    ;; modules still need an explicit branch here because `do`
+                    ;; is sequencing syntax, not a user-defined function.
+                    (= op 'do)
+                    (let [n (count args)]
+                      (mapcat (fn [index arg]
+                                (concat (emit* arg env)
+                                        (when (< index (dec n)) [0x1a])))
+                              (range n) args))
                     (= op 'typed-cap-call)
                     (let [[cap-id _ _ request] args
                           typed-import (get intrinsic-indices [:capability cap-id])]

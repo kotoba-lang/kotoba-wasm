@@ -67,12 +67,14 @@
 
 (deftest bytes-values-use-typed-abi-v14-and-a-dedicated-empty-constructor
   (let [kir {:format :kotoba.kir/v4
-             :exports ['empty]
+             :exports ['empty 'discard]
              :schemas {}
              :effects #{}
              :functions
              [{:name 'empty :params [] :param-types [] :result :bytes
-               :effects #{} :body '(bytes-empty)}]}
+               :effects #{} :body '(bytes-empty)}
+              {:name 'discard :params [] :param-types [] :result :i64
+               :effects #{} :body '(do (bytes-empty) 1)}]}
         bytes (wasm/emit kir :wasm32-browser-kotoba-v1)
         path (Files/createTempFile "kotoba-wasm-bytes-empty-" ".wasm"
                                    (make-array FileAttribute 0))]
