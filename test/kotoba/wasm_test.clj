@@ -89,6 +89,26 @@
       (finally
         (Files/deleteIfExists path)))))
 
+(deftest canonical-list-construction-uses-the-list-descriptor
+  (let [descriptor [:list :i64]
+        kir {:format :kotoba.kir/v4
+             :exports ['count-items]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'count-items :params [] :param-types [] :result :i64 :effects #{}
+               :body (list 'vector-count (list 'typed-list-new descriptor 4 5 6))}]}
+        bytes (wasm/emit kir :wasm32-wasi-kotoba-v1)
+        path (Files/createTempFile
+              "kotoba-wasm-generic-list-new-" ".wasm"
+              (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))]
+        (is (zero? (:exit validated)) (:err validated)))
+      (finally
+        (Files/deleteIfExists path)))))
+
 (deftest canonical-bool-validation-exclusions-are-function-scoped
   (let [kir {:format :kotoba.kir/v4
              :exports ['joined 'ordinary]
