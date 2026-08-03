@@ -7,11 +7,12 @@
 (def document-abi-version 11)
 (def symbol-abi-version 12)
 (def list-abi-version 13)
+(def bytes-abi-version 14)
 (def custom-section-name "kotoba.typed")
 
 (def ^:private primitive-tags
   {:i64 0 :string 1 :keyword 2 :bool 3 :symbol 19 :vector-i64 11 :f64 12 :f32 13
-   :vector-f64 14 :string-index 16 :disjoint-set-i64 17 :document 18})
+   :vector-f64 14 :string-index 16 :disjoint-set-i64 17 :document 18 :bytes 21})
 
 (def ^:private scalar-adt-aliases
   {:option-i64 [:option :i64]
@@ -166,6 +167,8 @@
     (reduce (fn [result item] (walk item result)) (conj found :keyword) value)
     (and (seq? value) (= 'symbol (first value)))
     (reduce (fn [result item] (walk item result)) (conj found :symbol) value)
+    (and (seq? value) (= 'bytes-empty (first value)))
+    (conj found :bytes)
     (map? value) (reduce (fn [result item] (walk item result)) found (vals value))
     (coll? value) (reduce (fn [result item] (walk item result)) found value)
     (string? value) (conj found :string)
@@ -282,12 +285,14 @@
         document? (some #(= :document %) descriptors)
         symbol? (some #(= :symbol %) descriptors)
         list? (some #(and (vector? %) (= :list (first %))) descriptors)
+        bytes? (some #(= :bytes %) descriptors)
         compact-graph?
         (some #(or (= :string-index %) (= :disjoint-set-i64 %)) descriptors)
         schema? (or (seq schemas) (seq contracts))
-        extended-schema? (or schema? compact-graph? document? symbol? list?)
+        extended-schema? (or schema? compact-graph? document? symbol? list? bytes?)
         indices (descriptor-indices kir)]
-    (vec (concat [(cond list? list-abi-version
+    (vec (concat [(cond bytes? bytes-abi-version
+                        list? list-abi-version
                         symbol? symbol-abi-version
                         document? document-abi-version
                         compact-graph? compact-graph-abi-version
@@ -414,6 +419,7 @@
         (= op 'decimal-f64-parse) [:option :f64]
         (= op 'decimal-f64x3-parse) [:option [:vector [:f64 :f64 :f64]]]
         (= op 'vector-new) :vector-i64
+        (= op 'bytes-empty) :bytes
         (= op 'vector-f64-new) :vector-f64
         (= op 'string-index-new) :string-index
         (= op 'string-index-get) [:option :i64]
