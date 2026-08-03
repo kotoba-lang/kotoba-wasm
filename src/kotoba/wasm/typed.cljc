@@ -148,10 +148,10 @@
     (reduce (fn [result item] (walk item result)) (conj found :disjoint-set-i64) value)
     (and (seq? value)
          (contains? '#{document-null document-bool document-i64 document-f64
-                      document-string document-keyword document-symbol document-vector document-list document-map
+                      document-string document-keyword document-symbol document-vector document-list document-set document-map
                       document-count document-kind document-vector-at document-list-at document-map-entry-at document-vector-assoc
                       document-vector-conj document-vector-drop document-vector-remove
-                      document-equal? document-sha256 document-print document-read
+                      document-equal? document-set-contains? document-sha256 document-print document-read
                       document-edn-print document-edn-read document-contains document-get document-assoc
                       document-dissoc document-merge document-string-value document-keyword-value document-symbol-value
                       document-bool-value document-i64-value document-f64-value}
@@ -406,7 +406,7 @@
         (contains? '#{bool-not option-some? result-ok?
                       result-ok?-of option-some?-of typed-set-contains
                       typed-map-contains string-index-contains} op) :bool
-        (contains? '#{document-contains document-equal?} op) :bool
+        (contains? '#{document-contains document-equal? document-set-contains?} op) :bool
         (contains? '#{string-concat string-substring string-replace-all string-fold-case keyword-name} op) :string
         (contains? '#{keyword-from-string document-kind} op) :keyword
         (= op 'symbol) :symbol
@@ -421,7 +421,7 @@
         (= op 'disjoint-set-i64-new) :disjoint-set-i64
         (= op 'disjoint-set-i64-union) [:option :disjoint-set-i64]
         (contains? '#{document-null document-bool document-i64 document-f64
-                      document-string document-keyword document-symbol document-vector document-list document-map
+                      document-string document-keyword document-symbol document-vector document-list document-set document-map
                       document-vector-assoc document-vector-conj document-vector-drop
                       document-vector-remove document-map-entry-at
                       document-assoc document-dissoc document-merge} op) :document
