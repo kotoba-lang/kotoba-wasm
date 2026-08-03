@@ -2272,6 +2272,8 @@
                                            'document-symbol 'typed-document-symbol} op))]))
                     (= op 'document-vector)
                     (emit-builder :document -1 args (repeat (count args) :document) env)
+                    (= op 'document-list)
+                    (emit-builder :document -3 args (repeat (count args) :document) env)
                     (= op 'document-map)
                     (emit-builder :document -2 args
                                   (map-indexed (fn [index _]
@@ -2282,13 +2284,14 @@
                     (= op 'document-kind)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
                             [0x10 (get intrinsic-indices 'typed-document-kind)])
-                    (contains? '#{document-vector-at document-map-entry-at document-vector-assoc
+                    (contains? '#{document-vector-at document-list-at document-map-entry-at document-vector-assoc
                                   document-vector-conj document-vector-drop
                                   document-vector-remove} op)
                     (concat (i32-const (descriptor-id :document))
                             (mapcat #(emit* % env) args)
                             [0x10 (get intrinsic-indices
                                        ({'document-vector-at 'typed-document-vector-at
+                                         'document-list-at 'typed-document-list-at
                                          'document-map-entry-at 'typed-document-map-entry-at
                                          'document-vector-assoc 'typed-document-vector-assoc
                                          'document-vector-conj 'typed-document-vector-conj
@@ -2858,8 +2861,8 @@
                                                disjoint-set-i64-union})
         has-document? (uses-operation? functions
                                        '#{document-null document-bool document-i64 document-f64
-                                          document-string document-keyword document-symbol document-vector document-map
-                                          document-count document-kind document-vector-at document-map-entry-at document-vector-assoc
+                                          document-string document-keyword document-symbol document-vector document-list document-map
+                                          document-count document-kind document-vector-at document-list-at document-map-entry-at document-vector-assoc
                                           document-vector-conj document-vector-drop document-vector-remove
                                           document-equal? document-sha256 document-print document-read
                                           document-edn-print document-edn-read document-contains document-get document-assoc
@@ -2970,6 +2973,7 @@
                             ['typed-document-edn-print "kotoba:typed" "document-edn-print" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-edn-read "kotoba:typed" "document-edn-read" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-vector-at "kotoba:typed" "document-vector-at" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
+                            ['typed-document-list-at "kotoba:typed" "document-list-at" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                             ['typed-document-map-entry-at "kotoba:typed" "document-map-entry-at" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                             ['typed-document-vector-assoc "kotoba:typed" "document-vector-assoc" [0x60 4 0x7f 0x6f 0x7e 0x6f 1 0x6f]]
                             ['typed-document-vector-conj "kotoba:typed" "document-vector-conj" [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]
