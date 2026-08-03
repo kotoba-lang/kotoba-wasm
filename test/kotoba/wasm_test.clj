@@ -17,6 +17,20 @@
   (is (some? (find-ns 'kotoba.wasm.canonical-abi)) "kotoba.wasm.canonical-abi must load")
   (is (some? (find-ns 'kotoba.wasm.tools)) "kotoba.wasm.tools must load"))
 
+(deftest document-map-infers-only-key-argument-types
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['value]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'value :params [] :param-types [] :result :document :effects #{}
+               :body '(document-map
+                        :ready (document-bool true)
+                        (document-vector (document-i64 1)) (document-string "value"))}]}
+        bytes (wasm/emit kir :wasm32-browser-kotoba-v1)]
+    (is (bytes? bytes))
+    (is (pos? (count bytes)))))
+
 (deftest bounded-list-descriptors-use-the-versioned-recursive-metadata-tag
   (let [descriptor [:list [:ref :demo/item]]
         schema [:record :demo/item [[:x :i64] [:enabled :bool]]]

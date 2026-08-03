@@ -2279,9 +2279,13 @@
                     (= op 'document-map)
                     (emit-builder
                      :document -2 args
-                     (map #(typed/infer-type
-                            % (into {} (map (fn [[key item]] [key (:type item)]) env)) signatures)
-                          args)
+                     (map-indexed
+                      (fn [index arg]
+                        (if (even? index)
+                          (typed/infer-type
+                           arg (into {} (map (fn [[key item]] [key (:type item)]) env)) signatures)
+                          :document))
+                      args)
                      env)
                     (= op 'document-count)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
