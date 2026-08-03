@@ -31,6 +31,24 @@
     (is (bytes? bytes))
     (is (pos? (count bytes)))))
 
+(deftest typed-modules-lower-legacy-pair-intrinsics
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['main]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'main :params [] :param-types [] :result :i64 :effects #{}
+               :body '(pair-first (pair 42 7))}]}
+        bytes (wasm/emit kir :wasm32-browser-kotoba-v1)
+        path (Files/createTempFile "kotoba-wasm-typed-pair-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))]
+        (is (zero? (:exit validated)) (:err validated)))
+      (finally
+        (Files/deleteIfExists path)))))
+
 (deftest bounded-list-descriptors-use-the-versioned-recursive-metadata-tag
   (let [descriptor [:list [:ref :demo/item]]
         schema [:record :demo/item [[:x :i64] [:enabled :bool]]]
