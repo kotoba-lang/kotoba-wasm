@@ -442,7 +442,7 @@
         (contains? '#{vector-drop vector-assoc vector-conj} op) :vector-i64
         (= op 'variant-new) (first args)
         (contains? '#{option-some-of option-none-of result-ok-of result-err-of
-                      hetero-vector-new typed-set-new typed-map-new record-new} op) (first args)
+                      typed-list-new hetero-vector-new typed-set-new typed-map-new record-new} op) (first args)
         (= op 'result-match-of)
         (let [[type _ ok-name ok-body] args]
           (infer-type ok-body (assoc env ok-name (second type)) signatures))

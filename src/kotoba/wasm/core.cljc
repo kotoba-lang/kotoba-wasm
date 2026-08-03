@@ -2454,6 +2454,9 @@
                     (= op 'hetero-vector-new)
                     (let [[type & items] args]
                       (emit-builder type -1 items (second type) env))
+                    (= op 'typed-list-new)
+                    (let [[type & items] args]
+                      (emit-builder type -1 items (repeat (count items) (second type)) env))
                     (= op 'typed-set-new)
                     (let [[type & items] args]
                       (emit-builder type -1 items (repeat (count items) (second type)) env))
