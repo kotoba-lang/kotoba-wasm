@@ -2277,9 +2277,12 @@
                     (= op 'document-set)
                     (emit-builder :document -4 args (repeat (count args) :document) env)
                     (= op 'document-map)
-                    (emit-builder :document -2 args
-                                  (map-indexed (fn [index _]
-                                                 (if (even? index) :keyword :document)) args) env)
+                    (emit-builder
+                     :document -2 args
+                     (map #(typed/infer-type
+                            % (into {} (map (fn [[key item]] [key (:type item)]) env)) signatures)
+                          args)
+                     env)
                     (= op 'document-count)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
                             [0x10 (get intrinsic-indices 'typed-count)])
