@@ -65,6 +65,28 @@
     (is (= [20 3] (typed/encode-descriptor [:list :bool])))
     (is (= typed/list-abi-version (first (typed/metadata-bytes kir))))))
 
+(deftest bytes-values-use-typed-abi-v14-and-a-dedicated-empty-constructor
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['empty]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'empty :params [] :param-types [] :result :bytes
+               :effects #{} :body '(bytes-empty)}]}
+        bytes (wasm/emit kir :wasm32-browser-kotoba-v1)
+        path (Files/createTempFile "kotoba-wasm-bytes-empty-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (is (= [21] (typed/encode-descriptor :bytes)))
+    (is (= typed/bytes-abi-version (first (typed/metadata-bytes kir))))
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            printed (shell/sh "wasm-tools" "print" (str path))]
+        (is (zero? (:exit validated)) (:err validated))
+        (is (str/includes? (:out printed) "(import \"kotoba:typed\" \"bytes-empty\"")))
+      (finally
+        (Files/deleteIfExists path)))))
+
 (deftest vector-count-uses-the-actual-canonical-list-descriptor
   (let [descriptor [:list :string]
         kir {:format :kotoba.kir/v4

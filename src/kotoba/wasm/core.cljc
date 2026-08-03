@@ -2163,6 +2163,9 @@
                     (= op 'symbol)
                     (concat (i32-const (descriptor-id :symbol)) (emit* (first args) env)
                             [0x10 (get intrinsic-indices 'typed-symbol-from-string)])
+                    (= op 'bytes-empty)
+                    (concat (i32-const (descriptor-id :bytes))
+                            [0x10 (get intrinsic-indices 'typed-bytes-empty)])
                     (= op 'vector-new)
                     (emit-builder :vector-i64 -1 args (repeat (count args) :i64) env)
                     (= op 'vector-count)
@@ -2891,6 +2894,7 @@
                                           document-i64-value document-f64-value})
         has-keyword-from-string? (uses-operation? functions '#{keyword-from-string})
         has-symbol-from-string? (uses-operation? functions '#{symbol})
+        has-bytes-empty? (uses-operation? functions '#{bytes-empty})
         typed-imports (when (and typed?
                                  (not component-canonical-scalars?)
                                  (typed/requires-host-runtime? kir))
@@ -2917,6 +2921,9 @@
                          ;; uses typed-bool-value; host browser-host has bool-value).
                          ['typed-bool-value "kotoba:typed" "bool-value" [0x60 1 0x6f 1 0x7f]]
                          ['typed-equal "kotoba:typed" "equal" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]]
+                         (when has-bytes-empty?
+                           [['typed-bytes-empty "kotoba:typed" "bytes-empty"
+                             [0x60 1 0x7f 1 0x6f]]])
                          (when has-string-concat?
                            [['typed-string-concat "kotoba:typed" "string-concat"
                              [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]])
