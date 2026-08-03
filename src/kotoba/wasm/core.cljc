@@ -2274,6 +2274,8 @@
                     (emit-builder :document -1 args (repeat (count args) :document) env)
                     (= op 'document-list)
                     (emit-builder :document -3 args (repeat (count args) :document) env)
+                    (= op 'document-set)
+                    (emit-builder :document -4 args (repeat (count args) :document) env)
                     (= op 'document-map)
                     (emit-builder :document -2 args
                                   (map-indexed (fn [index _]
@@ -2302,6 +2304,11 @@
                      (concat (i32-const (descriptor-id :document))
                              (emit* (first args) env) (emit* (second args) env)
                              [0x10 (get intrinsic-indices 'typed-document-contains)]))
+                    (= op 'document-set-contains?)
+                    (emit-bool
+                     (concat (i32-const (descriptor-id :document))
+                             (emit* (first args) env) (emit* (second args) env)
+                             [0x10 (get intrinsic-indices 'typed-document-set-contains)]))
                     (= op 'document-equal?)
                     (emit-bool
                      (concat (i32-const (descriptor-id :document))
@@ -2861,10 +2868,10 @@
                                                disjoint-set-i64-union})
         has-document? (uses-operation? functions
                                        '#{document-null document-bool document-i64 document-f64
-                                          document-string document-keyword document-symbol document-vector document-list document-map
+                                          document-string document-keyword document-symbol document-vector document-list document-set document-map
                                           document-count document-kind document-vector-at document-list-at document-map-entry-at document-vector-assoc
                                           document-vector-conj document-vector-drop document-vector-remove
-                                          document-equal? document-sha256 document-print document-read
+                                          document-equal? document-set-contains? document-sha256 document-print document-read
                                           document-edn-print document-edn-read document-contains document-get document-assoc
                                           document-dissoc document-merge document-string-value
                                           document-keyword-value document-symbol-value document-bool-value
@@ -2980,6 +2987,7 @@
                             ['typed-document-vector-drop "kotoba:typed" "document-vector-drop" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                             ['typed-document-vector-remove "kotoba:typed" "document-vector-remove" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                             ['typed-document-contains "kotoba:typed" "document-contains" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]
+                            ['typed-document-set-contains "kotoba:typed" "document-set-contains" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]
                             ['typed-document-get "kotoba:typed" "document-get" [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]
                             ['typed-document-assoc "kotoba:typed" "document-assoc" [0x60 4 0x7f 0x6f 0x6f 0x6f 1 0x6f]]
                             ['typed-document-dissoc "kotoba:typed" "document-dissoc" [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]
