@@ -2,7 +2,7 @@
  :deps {org.clojure/clojure {:mvn/version "1.12.0"}
         io.github.kotoba-lang/kotoba-kir
         {:git/url "https://github.com/kotoba-lang/kotoba-kir.git"
-         :git/sha "767f2f2fcb6c2c8f9288b24bef24caedb0486333"}}
+         :git/sha "194623b9e8274a50a3aadaa0dd2254a63feceba1"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {io.github.cognitect-labs/test-runner
                                {:git/url "https://github.com/cognitect-labs/test-runner.git"
