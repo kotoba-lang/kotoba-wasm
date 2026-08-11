@@ -238,8 +238,8 @@
         (contains? '#{f32-eq f32-lt f32-le f32-gt f32-ge f32-unordered} op) :bool
         (contains? '#{= < > <= >= hetero-vector-equal typed-set-equal
                       typed-map-equal record-equal} op) :i64
-        (= op 'string=?) :i64
-        (= op 'string-contains?) :i64
+        (= op 'string=?) :bool
+        (= op 'string-contains?) :bool
         (= op 'string-split-count) :i64
         (contains? '#{bool-not option-some? result-ok?
                       result-ok?-of option-some?-of typed-set-contains
@@ -310,4 +310,3 @@
         :else (or (:result (get signatures op))
                   (throw (ex-info "unsupported typed Wasm expression"
                                   {:phase :wasm-typed-lowering :operation op :form form})))))))
-
