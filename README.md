@@ -28,6 +28,11 @@ The `component-list-get-*` forms preserve those list checks but choose a
 caller-supplied fallback for a negative or out-of-range index without
 addressing memory.
 
+Declared core-Wasm fuel is a positive exact i64 subset through `2^62 - 1` on
+both JVM Clojure and ClojureScript/Node. The Node branch keeps policy values as
+BigInt through validation and signed-LEB128 emission; it never narrows them
+through JavaScript Number.
+
 ## Does not own
 
 - parse .kotoba source
