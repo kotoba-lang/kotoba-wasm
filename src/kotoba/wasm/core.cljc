@@ -2729,7 +2729,17 @@
 
 (defn- exact-integer? [value]
   #?(:clj (integer? value)
-     :cljs (or (integer? value) (= "bigint" (js/typeof value)))))
+     :cljs (or (integer? value) (i64/bigint-value? value))))
+
+(defn- positive-fuel? [value]
+  #?(:clj (pos? value)
+     :cljs (if (i64/bigint-value? value)
+             (i64/k-pos? value)
+             (pos? value))))
+
+(defn- fuel-over-ceiling? [value]
+  #?(:clj (> value max-fuel)
+     :cljs (> (i64/->bigint value) max-fuel)))
 
 (defn- fuel-budget! [fuel]
   (cond
@@ -2737,10 +2747,10 @@
     (not (exact-integer? fuel))
     (throw (ex-info "fuel budget must be an integer"
                     {:phase :wasm-emit :fuel fuel}))
-    (not (pos? fuel))
+    (not (positive-fuel? fuel))
     (throw (ex-info "fuel budget must be positive"
                     {:phase :wasm-emit :fuel fuel}))
-    (> fuel max-fuel)
+    (fuel-over-ceiling? fuel)
     (throw (ex-info "fuel budget exceeds the representable ceiling"
                     {:phase :wasm-emit :fuel fuel :max max-fuel}))
     :else fuel))
