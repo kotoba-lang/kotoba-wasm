@@ -2721,12 +2721,20 @@
   `global.get`/`sub`, so the representable ceiling is i64; this bound keeps a
   declared budget inside a value the SLEB128 encoder and every host that
   reports remaining fuel can carry without ambiguity."
-  (dec (bit-shift-left 1 62)))
+  ;; ClojureScript bitwise shifts are int32 operations: `(bit-shift-left 1 62)`
+  ;; silently means a shift by 30. Keep the Node compiler's limit in the exact
+  ;; BigInt domain used by `sleb` for every `.kotoba` i64 value.
+  #?(:clj (dec (bit-shift-left 1 62))
+     :cljs (- (js/BigInt "4611686018427387904") (js/BigInt 1))))
+
+(defn- exact-integer? [value]
+  #?(:clj (integer? value)
+     :cljs (or (integer? value) (= "bigint" (js/typeof value)))))
 
 (defn- fuel-budget! [fuel]
   (cond
     (nil? fuel) default-fuel
-    (not (integer? fuel))
+    (not (exact-integer? fuel))
     (throw (ex-info "fuel budget must be an integer"
                     {:phase :wasm-emit :fuel fuel}))
     (not (pos? fuel))

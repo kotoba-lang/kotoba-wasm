@@ -17,6 +17,19 @@
   (is (some? (find-ns 'kotoba.wasm.canonical-abi)) "kotoba.wasm.canonical-abi must load")
   (is (some? (find-ns 'kotoba.wasm.tools)) "kotoba.wasm.tools must load"))
 
+(deftest fuel-ceiling-is-the-exact-positive-i64-subset
+  (let [kir {:format :kotoba.kir/v2
+             :entry 'main
+             :exports ['main]
+             :effects #{}
+             :functions [{:name 'main :params [] :body 42}]}]
+    (is (= 4611686018427387903 wasm/max-fuel))
+    (is (bytes? (wasm/emit kir :wasm32-kotoba-v1 {:fuel wasm/max-fuel})))
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"exceeds the representable ceiling"
+         (wasm/emit kir :wasm32-kotoba-v1 {:fuel (inc wasm/max-fuel)})))))
+
 (deftest document-map-infers-only-key-argument-types
   (let [kir {:format :kotoba.kir/v4
              :exports ['value]
