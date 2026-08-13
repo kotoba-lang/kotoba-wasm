@@ -1,8 +1,13 @@
 # kotoba-wasm
 
-Kotoba WebAssembly backend — checked KIR to core Wasm and Canonical ABI.
+Amu's Wasm **綾** — checked KIR to core Wasm and Canonical ABI.
 
-**Tier**: `T2`  **Role**: `backend`
+This is not a being. [`amu`](https://github.com/kotoba-lang/amu) weaves;
+this repository is one pattern in that weave. It does not link at runtime
+and does not execute. That is [`kototama`](https://github.com/kotoba-lang/kototama).
+See root ADR-2608139980.
+
+**Tier**: `T2`  **Role**: `backend` of amu
 
 Split out of the overloaded core repos by ADR-2607266000 so that each
 responsibility has exactly one owner and the dependency direction is
