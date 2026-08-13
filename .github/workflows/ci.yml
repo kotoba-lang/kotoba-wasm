@@ -37,10 +37,14 @@ jobs:
       - run: clojure -M:test
 
   # This repo's own suite passing is not enough: it is a library whose only
-  # consumer is kotoba-lang/compiler, and a change can be green here while
-  # breaking the compiler's dual-backend conformance. That happened on
-  # 2026-07-30 (kotoba-wasm f4d7afb: green here, 47/52 there), which is why
-  # this job exists.
+  # compiler consumer is kotoba-lang/amu (formerly kotoba-lang/compiler), and a
+  # change can be green here while breaking amu's dual-backend conformance.
+  # That happened on 2026-07-30 (kotoba-wasm f4d7afb: green here, 47/52 there),
+  # which is why this job exists.
+  #
+  # 2026-08-04 run 30898613513 failed after clone succeeded: this checkout
+  # requires kotoba.kir.descriptor, and amu's kotoba-kir pin at the time did
+  # not yet have that namespace. Do not treat a skipped consumer job as green.
   consumer-conformance:
     runs-on: ubuntu-latest
     steps:
@@ -48,7 +52,7 @@ jobs:
         with:
           path: dep
       - name: Check out the consumer
-        run: git clone --depth 1 https://github.com/kotoba-lang/compiler compiler
+        run: git clone --depth 1 https://github.com/kotoba-lang/amu amu
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -59,8 +63,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Compiler dual-backend conformance against this checkout
-        working-directory: compiler
+      - name: Amu dual-backend conformance against this checkout
+        working-directory: amu
         run: |
           clojure -Sdeps "{:aliases {:dep {:override-deps {io.github.kotoba-lang/${{ github.event.repository.name }} {:local/root \"../dep\"}}}}}" \
             -M:dep:conformance
