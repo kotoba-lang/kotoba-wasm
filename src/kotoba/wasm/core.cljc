@@ -168,15 +168,23 @@
                   [0x10 (get intrinsic-indices 'cap-call)]))
 
         (= op 'typed-cap-call)
-        (let [[cap-id _request-type _result-type request] args
-              typed-import (get intrinsic-indices [:capability cap-id])]
-          (if typed-import
-            (concat (emit-expr request env ctx) [0x10 typed-import])
-            ;; This path is intentionally unbindable by Component packaging;
-            ;; it retains the ordinary core-module fallback for callers that
-            ;; emit a typed KIR without a named capability-import table.
-            (concat [0x41] (sleb cap-id)
-                    (emit-expr request env ctx)
+        (let [[cap-id request-type result-type request] args
+              typed-import (get intrinsic-indices [:capability cap-id])
+              request-bytes (emit-expr request env ctx)]
+          (cond
+            typed-import
+            (concat request-bytes [0x10 typed-import])
+            ;; Word-typed i64/i64 is the ABI `clock/now` actually elaborates
+            ;; to. The generic `kotoba:typed`/`cap-call` import is
+            ;; (i32, externref)->externref, so lowering an i64 seed through
+            ;; it produced a module `wasm-tools validate` rejects
+            ;; (expected externref, found i64). Reuse the existing
+            ;; `kotoba:cap`/`call` (i64, i64)->i64 import instead.
+            (and (= request-type :i64) (= result-type :i64))
+            (concat [0x42] (sleb cap-id) request-bytes
+                    [0x10 (get intrinsic-indices 'cap-call)])
+            :else
+            (concat [0x41] (sleb cap-id) request-bytes
                     [0x10 (get intrinsic-indices 'typed-cap-call)])))
 
         (contains? '#{pair pair-first pair-second} op)
@@ -1790,14 +1798,20 @@
                                         (when (< index (dec n)) [0x1a])))
                               (range n) args))
                     (= op 'typed-cap-call)
-                    (let [[cap-id _ _ request] args
-                          typed-import (get intrinsic-indices [:capability cap-id])]
-                      (if typed-import
+                    (let [[cap-id request-type result-type request] args
+                          typed-import (get intrinsic-indices [:capability cap-id])
+                          request-bytes (emit* request env)]
+                      (cond
+                        typed-import
                         ;; A typed import takes the request directly; the
                         ;; capability id is carried by the import identity, not
                         ;; passed as an operand.
-                        (concat (emit* request env) [0x10 typed-import])
-                        (concat (i32-const cap-id) (emit* request env)
+                        (concat request-bytes [0x10 typed-import])
+                        (and (= request-type :i64) (= result-type :i64))
+                        (concat [0x42] (sleb cap-id) request-bytes
+                                [0x10 (get intrinsic-indices 'cap-call)])
+                        :else
+                        (concat (i32-const cap-id) request-bytes
                                 [0x10 (get intrinsic-indices 'typed-cap-call)])))
                     (= op 'i64-extend-i32-u)
                     (concat (emit* (first args) env) [0xad])
@@ -2711,6 +2725,23 @@
                  (tree-seq coll? seq (:body function))))
          functions)))
 
+(defn- typed-cap-call-contracts [functions]
+  (into []
+        (mapcat (fn [function]
+                  (keep (fn [form]
+                          (when (and (seq? form)
+                                     (= 'typed-cap-call (first form))
+                                     (= 5 (count form)))
+                            {:id (nth form 1)
+                             :request-type (nth form 2)
+                             :result-type (nth form 3)}))
+                        (tree-seq coll? seq (:body function))))
+                functions)))
+
+(defn- i64-word-typed-cap? [contract]
+  (and (= :i64 (:request-type contract))
+       (= :i64 (:result-type contract))))
+
 (def default-fuel
   "Historical fixed call budget. Every caller that supplies no `:fuel` gets
   exactly this, so core-wasm behaviour is unchanged by fuel parameterization."
@@ -2857,7 +2888,15 @@
                             (if (and component-canonical-scalars? (= :bool type))
                               0x7f
                               (typed/wasm-type type)))
-        has-cap? (uses-operation? functions '#{cap-call})
+        typed-cap-contracts (typed-cap-call-contracts functions)
+        has-generic-i64-typed-cap?
+        (and (empty? capability-imports)
+             (some i64-word-typed-cap? typed-cap-contracts))
+        has-generic-externref-typed-cap?
+        (and (empty? capability-imports)
+             (some (complement i64-word-typed-cap?) typed-cap-contracts))
+        has-cap? (or (uses-operation? functions '#{cap-call})
+                     has-generic-i64-typed-cap?)
         has-typed-cap? (uses-operation? functions '#{typed-cap-call})
         _named-capability
         (when (and component-canonical-scalars?
@@ -3066,7 +3105,7 @@
                         (mapv (fn [{:keys [id module field type]}]
                                 [[:capability id] module field type])
                               capability-imports)
-                        (when has-typed-cap?
+                        (when has-generic-externref-typed-cap?
                           [['typed-cap-call "kotoba:typed" "cap-call"
                             [0x60 2 0x7f 0x6f 1 0x6f]]]))
                       (when has-cap? [['cap-call "kotoba:cap" "call"

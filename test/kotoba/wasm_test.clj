@@ -226,6 +226,34 @@
     (is (typed/requires-host-runtime? keyword-kir)
         "a keyword-valued capability result is not a native Wasm scalar")))
 
+(deftest i64-typed-cap-call-core-module-imports-kotoba-cap-and-validates
+  ;; amu elaborates `(clock/now seed)` to `(typed-cap-call 7 :i64 :i64 seed)`.
+  ;; The generic core-module fallback used to import `kotoba:typed`/`cap-call`
+  ;; as (i32, externref)->externref and then push i32+i64, which
+  ;; `wasm-tools validate` rejected. Word-typed i64/i64 must use the
+  ;; existing `kotoba:cap`/`call` (i64, i64)->i64 import so kototama can bind
+  ;; it without reference types.
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['main]
+             :schemas {}
+             :effects #{[:cap/call 7]}
+             :functions [{:name 'main :params []
+                          :param-types [] :result :i64
+                          :body '(typed-cap-call 7 :i64 :i64 0)}]}
+        bytes (wasm/emit kir :wasm32-kotoba-v1)
+        text (String. (byte-array (map unchecked-byte bytes)) "ISO-8859-1")
+        path (Files/createTempFile "kotoba-wasm-i64-cap-call-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (is (str/includes? text (str "kotoba:cap" (char 4) "call")))
+    (is (not (str/includes? text (str "kotoba:typed" (char 8) "cap-call")))
+        "i64/i64 must not take the externref cap-call import")
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))]
+        (is (zero? (:exit validated)) (:err validated)))
+      (finally
+        (Files/deleteIfExists path)))))
+
 (deftest canonical-scalar-capability-requires-an-explicit-named-binding
   (let [kir {:format :kotoba.kir/v4
              :exports ['call]
