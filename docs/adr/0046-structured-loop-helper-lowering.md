@@ -1,4 +1,4 @@
-# ADR 0043: Lower frontend loop helpers to structured Wasm control flow
+# ADR 0046: Lower frontend loop helpers to structured Wasm control flow
 
 - Status: Accepted
 - Date: 2026-08-09

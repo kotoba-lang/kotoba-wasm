@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-09
-- Extends: ADR 0043
+- Extends: ADR 0046
 
 ## Context
 
