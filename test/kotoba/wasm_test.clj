@@ -29,6 +29,314 @@
          clojure.lang.ExceptionInfo
          #"exceeds the representable ceiling"
          (wasm/emit kir :wasm32-kotoba-v1 {:fuel (inc wasm/max-fuel)})))))
+(deftest frontend-loop-helpers-use-structured-wasm-without-growing-host-stack
+  (let [kir {:format :kotoba.kir/v3
+             :exports ['scalar 'countdown]
+             :effects #{}
+             :functions
+             [{:name 'scalar :params ['iterations] :result :i64 :effects #{}
+               :body '(__kotoba_loop_1 0 0 iterations)}
+              {:name '__kotoba_loop_1 :params ['index 'total 'iterations]
+               :result :i64 :effects #{}
+               :body '(if (= index iterations)
+                        total
+                        (if (< index iterations)
+                          (__kotoba_loop_1 (+ index 1) (+ total (* 6 7)) iterations)
+                          total))}
+              ;; Ordinary source recursion remains a charged call and must not
+              ;; inherit the frontend loop-helper optimization.
+              {:name 'countdown :params ['remaining] :result :i64 :effects #{}
+               :body '(if (= remaining 0) 0 (countdown (- remaining 1)))}]}
+        bytes (wasm/emit kir :wasm32-kotoba-v1)
+        path (Files/createTempFile "kotoba-wasm-structured-loop-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            printed (shell/sh "wasm-tools" "print" (str path))
+            deep-loop (shell/sh "wasmtime" "run" "--invoke" "scalar"
+                                (str path) "100000")
+            fuel-trap (shell/sh "wasmtime" "run" "--invoke" "countdown"
+                                (str path) "600")]
+        (is (zero? (:exit validated)) (:err validated))
+        (is (str/includes? (:out printed) "      loop")
+            "frontend loop helper must contain a structured Wasm loop")
+        (is (= "4200000" (str/trim (:out deep-loop))) (:err deep-loop))
+        (is (not (zero? (:exit fuel-trap)))
+            "ordinary recursion must retain the fixed fuel boundary"))
+      (finally
+        (Files/deleteIfExists path)))))
+
+(deftest typed-loop-helpers-also-use-structured-wasm
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['scalar]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'scalar :params ['iterations] :param-types [:i64]
+               :result :i64 :effects #{}
+               :body '(__kotoba_loop_2 0 0 iterations)}
+              {:name '__kotoba_loop_2 :params ['index 'total 'iterations]
+               :param-types [:i64 :i64 :i64] :result :i64 :effects #{}
+               :body '(if (= index iterations)
+                        total
+                        (__kotoba_loop_2 (+ index 1) (+ total 42) iterations))}]}
+        bytes (wasm/emit kir :wasm32-kotoba-v1)
+        path (Files/createTempFile "kotoba-wasm-typed-structured-loop-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            deep-loop (shell/sh "wasmtime" "run" "--invoke" "scalar"
+                                (str path) "100000")]
+        (is (zero? (:exit validated)) (:err validated))
+        (is (= "4200000" (str/trim (:out deep-loop))) (:err deep-loop)))
+      (finally
+        (Files/deleteIfExists path)))))
+
+(deftest typed-u32-let-chain-keeps-intermediates-in-i32-locals
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['mix-step]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'mix-step :params ['state] :param-types [:i64]
+               :result :i64 :effects #{}
+               :body '(let [x0 (u32-wrap state)
+                            x1 (u32-wrap (i32-xor x0 (i32-shift-left x0 13)))
+                            x2 (u32-wrap (i32-xor x1 (u32-shift-right x1 17)))
+                            x3 (u32-wrap (i32-xor x2 (i32-shift-left x2 5)))]
+                        x3)}]}
+        path (Files/createTempFile "kotoba-wasm-u32-local-chain-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
+                   (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            printed (shell/sh "wasm-tools" "print" (str path))
+            result (shell/sh "wasmtime" "run" "--invoke" "mix-step"
+                             (str path) "2463534242")]
+        (is (zero? (:exit validated)) (:err validated))
+        (is (str/includes? (:out printed) "(local i32 i32 i32 i32)")
+            "u32-only let intermediates must not occupy i64 locals")
+        (is (<= (count (re-seq #"i64.extend_i32_u" (:out printed))) 1)
+            "the u32 chain should extend only at its i64 result boundary")
+        (is (= "723471715" (str/trim (:out result))) (:err result)))
+      (finally
+        (Files/deleteIfExists path)))))
+
+(deftest bounded-vector-literal-reads-and-counts-use-checked-wasm-locals
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['pick 'let-pick 'empty-pick 'immediate-count
+                       'let-count 'count-and-pick]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'pick :params ['index] :param-types [:i64]
+               :result :i64 :effects #{}
+               :body '(vector-at (vector-new 3 5 8 13 21 34 55 89) index)}
+              {:name 'let-pick :params ['index] :param-types [:i64]
+               :result :i64 :effects #{}
+               :body '(let [items (vector-new 3 5 8 13 21 34 55 89)]
+                        (vector-at items index))}
+              {:name 'empty-pick :params [] :param-types []
+               :result :i64 :effects #{}
+               :body '(vector-at (vector-new) 0)}
+              {:name 'immediate-count :params [] :param-types []
+               :result :i64 :effects #{}
+               :body '(vector-count (vector-new 3 5 8 13 21 34 55 89))}
+              {:name 'let-count :params [] :param-types []
+               :result :i64 :effects #{}
+               :body '(let [items (vector-new 3 5 8)] (vector-count items))}
+              {:name 'count-and-pick :params ['index] :param-types [:i64]
+               :result :i64 :effects #{}
+               :body '(let [items (vector-new 3 5 8 13 21 34 55 89)]
+                        (+ (vector-count items) (vector-at items index)))}]}
+        path (Files/createTempFile "kotoba-wasm-scalar-vector-at-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
+                   (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            printed (shell/sh "wasm-tools" "print" (str path))
+            first-item (shell/sh "wasmtime" "run" "--invoke" "pick"
+                                 (str path) "0")
+            last-item (shell/sh "wasmtime" "run" "--invoke" "pick"
+                                (str path) "7")
+            let-item (shell/sh "wasmtime" "run" "--invoke" "let-pick"
+                               (str path) "5")
+            immediate-count (shell/sh "wasmtime" "run" "--invoke" "immediate-count"
+                                      (str path))
+            let-count (shell/sh "wasmtime" "run" "--invoke" "let-count"
+                                (str path))
+            count-and-pick (shell/sh "wasmtime" "run" "--invoke" "count-and-pick"
+                                     (str path) "0")
+            negative (shell/sh "wasmtime" "run" "--invoke" "pick"
+                               (str path) "-1")
+            past-end (shell/sh "wasmtime" "run" "--invoke" "pick"
+                               (str path) "8")
+            empty-vector (shell/sh "wasmtime" "run" "--invoke" "empty-pick"
+                                   (str path))]
+        (is (zero? (:exit validated)) (:err validated))
+        (is (not (str/includes? (:out printed) "(import \"kotoba:typed\""))
+            "a fully scalar-replaced module must not retain typed-host imports")
+        (is (= "3" (str/trim (:out first-item))) (:err first-item))
+        (is (= "89" (str/trim (:out last-item))) (:err last-item))
+        (is (= "34" (str/trim (:out let-item))) (:err let-item))
+        (is (= "8" (str/trim (:out immediate-count))) (:err immediate-count))
+        (is (= "3" (str/trim (:out let-count))) (:err let-count))
+        (is (= "11" (str/trim (:out count-and-pick))) (:err count-and-pick))
+        (is (not (zero? (:exit negative)))
+            "a negative literal-vector index must trap")
+        (is (not (zero? (:exit past-end)))
+            "an index equal to the literal-vector count must trap")
+        (is (not (zero? (:exit empty-vector)))
+            "reading an empty literal vector must trap"))
+      (finally
+        (Files/deleteIfExists path)))))
+
+(deftest escaping-and-wide-vector-literals-use-the-bounded-bulk-host-path
+  (let [wide-vector (apply list 'vector-new (range 33))
+        kir {:format :kotoba.kir/v4
+             :exports ['escape 'wide-read]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'escape :params [] :param-types []
+               :result :vector-i64 :effects #{}
+               :body '(let [items (vector-new 1 2 3)] items)}
+              {:name 'wide-read :params [] :param-types []
+               :result :i64 :effects #{}
+               :body (list 'vector-at wide-vector 0)}]}
+        path (Files/createTempFile "kotoba-wasm-host-vector-fallback-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
+                   (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            printed (shell/sh "wasm-tools" "print" (str path))]
+        (is (zero? (:exit validated)) (:err validated))
+        (is (str/includes? (:out printed)
+                           "(import \"kotoba:typed\" \"vector-from-memory-i64\"")
+            "escaping and over-local-limit vectors must use one bulk host copy")
+        (is (str/includes? (:out printed)
+                           "(import \"kotoba:typed\" \"scratch\" (memory (;0;) 2 2))")
+            "bulk construction must use the fixed imported scratch memory")
+        (is (str/includes? (:out printed)
+                           "(global (;1;) (mut i32) i32.const 0)")
+            "bulk construction must reserve from a private per-instance bump pointer")
+        (is (and (str/includes? (:out printed) "global.get 1")
+                 (str/includes? (:out printed) "global.set 1")
+                 (str/includes? (:out printed) "i32.const 131072")
+                 (str/includes? (:out printed) "i32.lt_u")
+                 (str/includes? (:out printed) "i32.gt_u"))
+            "the LIFO reservation must reject wraparound and scratch exhaustion")
+        (is (not (str/includes? (:out printed) "(export \"scratch\""))
+            "typed scratch and its bump pointer must remain host/module private")
+        (is (str/includes? (:out printed) "i64.store offset=256")
+            "a 33-item vector must store its final item at the checked offset")
+        (is (str/includes? (:out printed) "(import \"kotoba:typed\" \"vector-at-i64\"")
+            "the wide-vector fallback must retain checked host indexing"))
+      (finally
+        (Files/deleteIfExists path)))))
+
+(deftest structured-loop-recur-replaces-parameters-simultaneously
+  (let [untyped-kir
+        {:format :kotoba.kir/v3
+         :exports ['rotate]
+         :effects #{}
+         :functions
+         [{:name 'rotate :params ['iterations] :result :i64 :effects #{}
+           :body '(__kotoba_loop_7 1 2 iterations)}
+          {:name '__kotoba_loop_7 :params ['left 'right 'remaining]
+           :result :i64 :effects #{}
+           ;; An odd number of simultaneous swaps must produce 21. Updating
+           ;; `left` before evaluating `right` would incorrectly produce 22.
+           :body '(if (= remaining 0)
+                    (+ (* left 10) right)
+                    (__kotoba_loop_7 right left (- remaining 1)))}]}
+        typed-kir
+        {:format :kotoba.kir/v4
+         :exports ['rotate]
+         :schemas {}
+         :effects #{}
+         :functions
+         [{:name 'rotate :params ['iterations] :param-types [:i64]
+           :result :i64 :effects #{}
+           :body '(__kotoba_loop_8 1 2 iterations)}
+          {:name '__kotoba_loop_8 :params ['left 'right 'remaining]
+           :param-types [:i64 :i64 :i64] :result :i64 :effects #{}
+           :body '(if (= remaining 0)
+                    (+ (* left 10) right)
+                    (__kotoba_loop_8 right left (- remaining 1)))}]}]
+    (doseq [[label kir] [["untyped" untyped-kir] ["typed" typed-kir]]]
+      (let [path (Files/createTempFile (str "kotoba-wasm-parallel-recur-" label "-")
+                                       ".wasm" (make-array FileAttribute 0))]
+        (try
+          (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
+                       (make-array java.nio.file.OpenOption 0))
+          (let [validated (shell/sh "wasm-tools" "validate" (str path))
+                result (shell/sh "wasmtime" "run" "--invoke" "rotate"
+                                 (str path) "100001")]
+            (is (zero? (:exit validated)) (str label ": " (:err validated)))
+            (is (= "21" (str/trim (:out result)))
+                (str label ": " (:err result))))
+          (finally
+            (Files/deleteIfExists path)))))))
+
+(deftest malformed-loop-helper-arity-is-not-structured
+  (let [kir {:format :kotoba.kir/v3
+             :exports ['__kotoba_loop_10]
+             :effects #{}
+             :functions
+             [{:name '__kotoba_loop_10 :params ['remaining 'total]
+               :result :i64 :effects #{}
+               :body '(if (= remaining 0)
+                        total
+                        (__kotoba_loop_10 (- remaining 1)))}]}
+        path (Files/createTempFile "kotoba-wasm-loop-arity-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
+                   (make-array java.nio.file.OpenOption 0))
+      (let [printed (shell/sh "wasm-tools" "print" (str path))
+            validated (shell/sh "wasm-tools" "validate" (str path))]
+        (is (zero? (:exit printed)) (:err printed))
+        (is (not (str/includes? (:out printed) "      loop"))
+            "wrong-arity self-call must not retain stale parameter locals")
+        (is (not (zero? (:exit validated)))
+            "historical call lowering leaves malformed KIR fail-closed at validation"))
+      (finally
+        (Files/deleteIfExists path)))))
+
+(deftest unsupported-helper-self-call-shapes-fall-back-to-valid-call-lowering
+  (let [kir {:format :kotoba.kir/v3
+             :exports ['__kotoba_loop_9]
+             :effects #{}
+             :functions
+             [{:name '__kotoba_loop_9 :params ['remaining]
+               :result :i64 :effects #{}
+               ;; Deliberately not a frontend recur shape: the self-call is an
+               ;; operand of `+`, so rewriting it to `br` would target the
+               ;; wrong value context.
+               :body '(if (= remaining 0)
+                        0
+                        (+ 1 (__kotoba_loop_9 (- remaining 1))))}]}
+        bytes (wasm/emit kir :wasm32-kotoba-v1)
+        path (Files/createTempFile "kotoba-wasm-loop-fallback-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            printed (shell/sh "wasm-tools" "print" (str path))
+            result (shell/sh "wasmtime" "run" "--invoke" "__kotoba_loop_9"
+                             (str path) "10")]
+        (is (zero? (:exit validated)) (:err validated))
+        (is (not (str/includes? (:out printed) "      loop"))
+            "unsupported self-call context must not be rewritten to a branch")
+        (is (= "10" (str/trim (:out result))) (:err result)))
+      (finally
+        (Files/deleteIfExists path)))))
 
 (deftest document-map-infers-only-key-argument-types
   (let [kir {:format :kotoba.kir/v4

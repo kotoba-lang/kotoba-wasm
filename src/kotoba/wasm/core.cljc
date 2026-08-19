@@ -74,6 +74,9 @@
 
 (def compatibility-section-name "kotoba.compatibility")
 
+(def ^:private typed-scratch-pages 2)
+(def ^:private typed-scratch-capacity (* typed-scratch-pages 65536))
+
 (defn- wasm-runtime [target]
   (case target
     :wasm32-browser-kotoba-v1 :kotoba-browser-host-v1
@@ -115,12 +118,16 @@
              (local-count body)))
         (reduce + (map local-count args))))))
 
-(declare emit-expr)
+(declare emit-expr scalar-replaced-vector-at? scalar-replaced-vector-count?
+         scalar-vector-uses
+         scalar-vector-local-limit)
 
 (defn- emit-many [forms env ctx]
   (mapcat #(emit-expr % env ctx) forms))
 
-(defn emit-expr [form env {:keys [function-indices intrinsic-indices next-local] :as ctx}]
+(defn emit-expr
+  [form env {:keys [function-indices intrinsic-indices next-local
+                    tail-loop-name tail-loop-depth] :as ctx}]
   (cond
     ;; A literal here may be a bigint (from a `.kotoba` source literal, or
     ;; from `kotoba.kir`'s coercion once it passes through there)
@@ -151,8 +158,12 @@
         (let [[test then else] args]
           (concat (emit-expr test env ctx)
                   [0x50 0x45 0x04 0x7e]                         ; i64.eqz;i32.eqz;if i64
-                  (emit-expr then env ctx) [0x05]
-                  (emit-expr else env ctx) [0x0b]))
+                  ;; `if` introduces one label between a tail call and the
+                  ;; surrounding structured loop.
+                  (emit-expr then env (cond-> ctx tail-loop-name
+                                        (update :tail-loop-depth inc))) [0x05]
+                  (emit-expr else env (cond-> ctx tail-loop-name
+                                        (update :tail-loop-depth inc))) [0x0b]))
 
         ;; `do`: emit each subexpression in order; drop all but the last value
         ;; from the stack (0x1a = drop). Side effects run once, in order.
@@ -238,6 +249,17 @@
         (concat (emit-many args env ctx)
                 [({'= 0x51 '< 0x53 '> 0x55 '<= 0x57 '>= 0x59} op)
                  0xad])                                          ; extend i32 result to i64
+
+        (and tail-loop-name (= op tail-loop-name))
+        ;; Frontend-generated loop helpers are tail-recursive by construction.
+        ;; Evaluate every replacement while the old parameter locals are still
+        ;; intact, then pop the values into those locals in reverse order and
+        ;; branch to the surrounding Wasm `loop`. This removes host-stack
+        ;; growth without changing the source/KIR or replenishing fuel.
+        (concat (mapcat #(emit-expr % env ctx) args)
+                (mapcat (fn [index] [::local-set index])
+                        (reverse (range (count args))))
+                [0x0c] (uleb tail-loop-depth))
 
         :else
         (concat (emit-many args env ctx) [0x10 (get function-indices op)]))))) ; call
@@ -781,6 +803,47 @@
        (nil? (namespace sym))
        (boolean (re-matches #"__kotoba_loop_\d+" (name sym)))))
 
+(defn- structured-loop-body?
+  "True only when every self-call is in a tail position whose Wasm label depth
+  this emitter tracks and supplies exactly the helper parameter arity. Unknown
+  structured forms and malformed calls fail closed to the historical call
+  lowering instead of risking a branch to the wrong label or retaining stale
+  parameter locals."
+  [function-name param-count body]
+  (letfn [(self-call? [form]
+            (and (seq? form) (= function-name (first form))))
+          (contains-self-call? [form]
+            (boolean (some self-call?
+                           (tree-seq coll? seq form))))
+          (tail-safe? [form]
+            (if-not (seq? form)
+              true
+              (let [[op & args] form]
+                (cond
+                  (= op function-name)
+                  (and (= param-count (count args))
+                       (not-any? contains-self-call? args))
+
+                  (= op 'let)
+                  (let [[bindings result] args]
+                    (and (not-any? contains-self-call? (take-nth 2 (rest bindings)))
+                         (tail-safe? result)))
+
+                  (= op 'if)
+                  (let [[test then else] args]
+                    (and (not (contains-self-call? test))
+                         (tail-safe? then)
+                         (tail-safe? else)))
+
+                  (= op 'do)
+                  (and (seq args)
+                       (not-any? contains-self-call? (butlast args))
+                       (tail-safe? (last args)))
+
+                  :else
+                  (not (contains-self-call? form))))))]
+    (tail-safe? body)))
+
 (defn- emit-typed-function-body
   [function function-indices intrinsic-indices descriptor-indices literal-indices signatures
   {:keys [component-canonical-scalars? component-unchecked-bool-params]}]
@@ -797,6 +860,11 @@
         reference-type? (fn [type]
                           (and (not (and component-canonical-scalars? (= :bool type)))
                                (typed/reference-type? type)))
+        structured-loop? (and (loop-helper-name? (:name function))
+                              (structured-loop-body? (:name function)
+                                                     (count (:params function))
+                                                     (:body function))
+                              (not (reference-type? (:result function))))
         allocate! (fn [wasm-type]
                     (let [index (+ param-count (count @locals))]
                       (vswap! locals conj wasm-type)
@@ -841,6 +909,78 @@
                                    initial (map vector item-forms item-types))]
                 (concat (i32-const (descriptor-id type)) pushed
                         [0x10 (get intrinsic-indices 'typed-seal)])))
+            (emit-vector-i64-bulk [items env]
+              ;; Materialized vector literals use a host-owned, fixed two-page
+              ;; scratch memory. Each item is evaluated once, left-to-right,
+              ;; and stored little-endian before one synchronous host copy.
+              ;; The memory is imported but never exported, and the host fixes
+              ;; min=max so guest code cannot turn this into unbounded memory.
+              (let [offset-local (allocate! 0x7f)
+                    end-local (allocate! 0x7f)
+                    result-local (allocate! 0x6f)
+                    scratch-global (get intrinsic-indices :typed-scratch-global)
+                    byte-count (* 8 (count items))]
+                (concat
+                 ;; Reserve a LIFO slice before evaluating any item. A nested
+                 ;; or re-entrant construction observes the advanced private
+                 ;; bump global and therefore cannot overwrite this vector.
+                 [0x23 scratch-global ::local-tee offset-local
+                  0x41] (sleb byte-count)
+                 [0x6a ::local-tee end-local
+                  ::local-get offset-local 0x49 0x04 0x40 0x00 0x0b
+                  ::local-get end-local 0x41] (sleb typed-scratch-capacity)
+                 [0x4b 0x04 0x40 0x00 0x0b
+                  ::local-get end-local 0x24 scratch-global]
+                 (mapcat (fn [[index item]]
+                           (concat [::local-get offset-local]
+                                   (emit* item env)
+                                   [0x37 0x03]
+                                   (uleb (* index 8))))
+                         (map-indexed vector items))
+                 (i32-const (descriptor-id :vector-i64))
+                 [::local-get offset-local]
+                 (i32-const (count items))
+                 [0x10 (get intrinsic-indices 'typed-vector-from-memory-i64)
+                  ::local-set result-local
+                  ;; Normal completion releases exactly this LIFO slice.
+                  ::local-get offset-local 0x24 scratch-global
+                  ::local-get result-local])))
+            (emit-local-vector-at [item-locals index-form env]
+              ;; The elements have already been evaluated into locals.  Read
+              ;; the index exactly once, retain the language bounds trap, and
+              ;; select one scalar without materializing an externref.
+              (let [index-local (allocate! 0x7e)
+                    setup (concat (emit* index-form env)
+                                  [::local-set index-local])
+                    selector
+                    (fn selector [position]
+                      (if (= position (dec (count item-locals)))
+                        [::local-get (nth item-locals position)]
+                        (concat [::local-get index-local 0x42]
+                                (sleb position)
+                                [0x51 0x04 0x7e
+                                 ::local-get (nth item-locals position)
+                                 0x05]
+                                (selector (inc position))
+                                [0x0b])))]
+                (if (empty? item-locals)
+                  (concat setup [0x00])
+                  (concat setup
+                          ;; signed index >= 0 && unsigned index < item-count
+                          [::local-get index-local 0x42 0 0x59
+                           ::local-get index-local 0x42]
+                          (sleb (count item-locals))
+                          [0x54 0x71 0x04 0x7e]
+                          (selector 0)
+                          [0x05 0x00 0x0b]))))
+            (emit-scalar-vector-at [items index-form env]
+              ;; Evaluate every element left-to-right before the index, exactly
+              ;; like the original `(vector-at (vector-new ...) index)` call.
+              (let [item-locals (mapv (fn [_] (allocate! 0x7e)) items)
+                    setup (mapcat (fn [[item local]]
+                                    (concat (emit* item env) [::local-set local]))
+                                  (map vector items item-locals))]
+                (concat setup (emit-local-vector-at item-locals index-form env))))
             (emit-get [type value-form index item-type env]
               (let [code (concat (i32-const (descriptor-id type)) (emit* value-form env)
                                  (i32-const index)
@@ -1745,8 +1885,49 @@
                                   body-code [0x05]
                                   (emit-branches (inc index) (rest remaining)) [0x0b]))))]
                 (concat setup (emit-branches 0 branches))))
-            (emit* [form env]
+            ;; Emit a nested i32 expression without repeatedly round-tripping
+            ;; through the public i64 word representation at every internal
+            ;; node. The final caller still chooses signed or unsigned i64
+            ;; extension, preserving the existing typed ABI exactly.
+            (emit-i32* [form env]
               (cond
+                (and #?(:clj (integer? form)
+                        :cljs (or (i64/bigint-value? form) (integer? form)))
+                     (<= -2147483648 form 2147483647))
+                (i32-const form)
+
+                (and (symbol? form) (= :u32 (:representation (get env form))))
+                [::local-get (:index (get env form))]
+
+                (seq? form)
+                (let [[op & args] form]
+                  (cond
+                    (contains? '#{i32-wrap u32-wrap} op)
+                    (emit-i32* (first args) env)
+
+                    (contains? '#{i32-wrapping-add i32-wrapping-mul i32-xor} op)
+                    (concat (emit-i32* (first args) env)
+                            (emit-i32* (second args) env)
+                            [({'i32-wrapping-add 0x6a
+                               'i32-wrapping-mul 0x6c
+                               'i32-xor 0x73} op)])
+
+                    (contains? '#{i32-shift-left i32-shift-right u32-shift-right} op)
+                    (concat (emit-i32* (first args) env)
+                            (emit-i32* (second args) env)
+                            [({'i32-shift-left 0x74
+                               'i32-shift-right 0x75
+                               'u32-shift-right 0x76} op)])
+
+                    :else
+                    (concat (emit* form env) [0xa7])))
+
+                :else
+                (concat (emit* form env) [0xa7])))
+            (emit*
+              ([form env] (emit* form env 0))
+              ([form env tail-loop-depth]
+               (cond
                 (and (map? form) (contains? form :wasm-local)) [::local-get (:wasm-local form)]
                 #?(:clj (integer? form)
                    :cljs (or (i64/bigint-value? form) (integer? form)))
@@ -1761,7 +1942,10 @@
                                (if (keyword? form) (str form) form)]]
                   (concat (i32-const (get literal-indices literal))
                           [0x10 (get intrinsic-indices 'typed-literal)]))
-                (symbol? form) [::local-get (:index (get env form))]
+                (symbol? form)
+                (let [{:keys [index representation]} (get env form)]
+                  (cond-> [::local-get index]
+                    (= :u32 representation) (conj 0xad)))
                 :else
                 (let [[op & args] form]
                   (cond
@@ -1773,12 +1957,49 @@
                                                        (into {} (map (fn [[key item]]
                                                                       [key (:type item)]) current-env))
                                                        signatures)
-                                value-code (emit* value current-env)
-                                local (allocate! (wasm-type type))]
+                                future-scope (list 'let
+                                                   (vec (mapcat identity (rest remaining)))
+                                                   body)
+                                [scalar-vector-valid? scalar-vector-use-count]
+                                (if (and (= :vector-i64 type)
+                                         (seq? value)
+                                         (= 'vector-new (first value))
+                                         (<= (count (rest value))
+                                             scalar-vector-local-limit))
+                                  (scalar-vector-uses future-scope name false)
+                                  [false 0])
+                                scalar-vector? (and scalar-vector-valid?
+                                                    (pos? scalar-vector-use-count))
+                                representation
+                                (cond scalar-vector? :scalar-vector
+                                      (and (= :i64 type)
+                                           (seq? value)
+                                           (= 'u32-wrap (first value))) :u32)
+                                item-locals (when scalar-vector?
+                                              (mapv (fn [_] (allocate! 0x7e))
+                                                    (rest value)))
+                                value-code
+                                (cond
+                                  scalar-vector?
+                                  (mapcat (fn [[item local]]
+                                            (concat (emit* item current-env)
+                                                    [::local-set local]))
+                                          (map vector (rest value) item-locals))
+                                  (= :u32 representation)
+                                  (emit-i32* value current-env)
+                                  :else (emit* value current-env))
+                                local (when-not scalar-vector?
+                                        (allocate! (if representation 0x7f
+                                                       (wasm-type type))))]
                             (recur (next remaining)
-                                   (assoc current-env name {:index local :type type})
-                                   (concat code value-code [::local-set local])))
-                          (concat code (emit* body current-env)))))
+                                   (assoc current-env name
+                                          (cond-> {:type type}
+                                            local (assoc :index local)
+                                            representation (assoc :representation representation)
+                                            scalar-vector? (assoc :items item-locals)))
+                                   (concat code value-code
+                                           (when local [::local-set local]))))
+                          (concat code (emit* body current-env tail-loop-depth)))))
                     (= op 'if)
                     (let [[test then else] args
                           result-type (typed/infer-type
@@ -1787,14 +2008,16 @@
                                        signatures)]
                       (concat (emit-test test env)
                               [0x04 (wasm-type result-type)]
-                              (emit* then env) [0x05] (emit* else env) [0x0b]))
+                              (emit* then env (inc tail-loop-depth)) [0x05]
+                              (emit* else env (inc tail-loop-depth)) [0x0b]))
                     ;; Wasm `drop` is polymorphic, including externref. Typed
                     ;; modules still need an explicit branch here because `do`
                     ;; is sequencing syntax, not a user-defined function.
                     (= op 'do)
                     (let [n (count args)]
                       (mapcat (fn [index arg]
-                                (concat (emit* arg env)
+                                (concat (emit* arg env
+                                               (if (= index (dec n)) tail-loop-depth 0))
                                         (when (< index (dec n)) [0x1a])))
                               (range n) args))
                     (= op 'typed-cap-call)
@@ -2119,12 +2342,12 @@
                     (concat (mapcat #(emit* % env) args)
                             [0x10 (get intrinsic-indices op)])
                     (= op 'i32-wrap)
-                    (concat (emit* (first args) env) [0xa7 0xac])
+                    (concat (emit-i32* (first args) env) [0xac])
                     (= op 'u32-wrap)
-                    (concat (emit* (first args) env) [0xa7 0xad])
+                    (concat (emit-i32* (first args) env) [0xad])
                     (contains? '#{i32-wrapping-add i32-wrapping-mul i32-xor} op)
-                    (concat (emit* (first args) env) [0xa7]
-                            (emit* (second args) env) [0xa7]
+                    (concat (emit-i32* (first args) env)
+                            (emit-i32* (second args) env)
                             [({'i32-wrapping-add 0x6a 'i32-wrapping-mul 0x6c 'i32-xor 0x73} op)
                              0xac])
                     ;; ADR-2607254600 D1. Operands are already i64, so unlike
@@ -2141,8 +2364,8 @@
                     (concat (emit* (first args) env) [0x42 0x7f 0x85])
 
                     (contains? '#{i32-shift-left i32-shift-right u32-shift-right} op)
-                    (concat (emit* (first args) env) [0xa7]
-                            (emit* (second args) env) [0xa7]
+                    (concat (emit-i32* (first args) env)
+                            (emit-i32* (second args) env)
                             [({'i32-shift-left 0x74 'i32-shift-right 0x75 'u32-shift-right 0x76} op)
                              (if (= op 'u32-shift-right) 0xad 0xac)])
                     (= op 'string-byte-length)
@@ -2190,30 +2413,54 @@
                     (concat (i32-const (descriptor-id :bytes))
                             [0x10 (get intrinsic-indices 'typed-bytes-empty)])
                     (= op 'vector-new)
-                    (emit-builder :vector-i64 -1 args (repeat (count args) :i64) env)
+                    (if (get intrinsic-indices 'typed-vector-from-memory-i64)
+                      (emit-vector-i64-bulk args env)
+                      (emit-builder :vector-i64 -1 args (repeat (count args) :i64) env))
                     (= op 'vector-count)
-                    (let [value-type
-                          (typed/infer-type
-                           (first args)
-                           (into {} (map (fn [[key item]] [key (:type item)]) env))
-                           signatures)
-                          countable?
-                          (or (= :vector-i64 value-type)
-                              (and (vector? value-type)
-                                   (= 2 (count value-type))
-                                   (= :list (first value-type))))]
-                      (when-not countable?
-                        (throw
-                         (ex-info "vector-count requires a canonical list"
-                                  {:phase :wasm-typed-lowering
-                                   :type value-type})))
-                      (concat (i32-const (descriptor-id value-type))
-                              (emit* (first args) env)
-                              [0x10 (get intrinsic-indices 'typed-count)]))
+                    (let [value (first args)]
+                      (cond
+                        (scalar-replaced-vector-count? form)
+                        (concat
+                         (mapcat #(concat (emit* % env) [0x1a]) (rest value))
+                         [0x42] (sleb (count (rest value))))
+
+                        (and (symbol? value)
+                             (= :scalar-vector (:representation (get env value))))
+                        (concat [0x42] (sleb (count (:items (get env value)))))
+
+                        :else
+                        (let [value-type
+                              (typed/infer-type
+                               value
+                               (into {} (map (fn [[key item]] [key (:type item)]) env))
+                               signatures)
+                              countable?
+                              (or (= :vector-i64 value-type)
+                                  (and (vector? value-type)
+                                       (= 2 (count value-type))
+                                       (= :list (first value-type))))]
+                          (when-not countable?
+                            (throw
+                             (ex-info "vector-count requires a canonical list"
+                                      {:phase :wasm-typed-lowering
+                                       :type value-type})))
+                          (concat (i32-const (descriptor-id value-type))
+                                  (emit* value env)
+                                  [0x10 (get intrinsic-indices 'typed-count)]))))
                     (= op 'vector-at)
-                    (concat (i32-const (descriptor-id :vector-i64))
-                            (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-vector-at-i64)])
+                    (let [[value index] args]
+                      (cond
+                        (scalar-replaced-vector-at? form)
+                        (emit-scalar-vector-at (rest value) index env)
+
+                        (and (symbol? value)
+                             (= :scalar-vector (:representation (get env value))))
+                        (emit-local-vector-at (:items (get env value)) index env)
+
+                        :else
+                        (concat (i32-const (descriptor-id :vector-i64))
+                                (emit* value env) (emit* index env)
+                                [0x10 (get intrinsic-indices 'typed-vector-at-i64)])))
                     (= op 'vector-get)
                     (let [[value index fallback] args
                           value-local (allocate! 0x6f)
@@ -2649,12 +2896,18 @@
                     (= op 'decimal-f64x3-parse)
                     (concat (emit* (first args) env)
                             [0x10 (get intrinsic-indices 'decimal-f64x3-parse)])
+                    (and structured-loop? (= op (:name function)))
+                    (concat (mapcat #(emit* % env 0) args)
+                            (mapcat (fn [index] [::local-set index])
+                                    (reverse (range (count args))))
+                            [0x0c] (uleb tail-loop-depth))
+
                     :else
                     (if-let [function-index (get function-indices op)]
                       (concat (mapcat #(emit* % env) args) [0x10 function-index])
                       (throw (ex-info "typed Wasm operation is not qualified"
                                       {:phase :wasm-typed-lowering
-                                       :operation op :form form})))))))]
+                                       :operation op :form form}))))))))]
       ;; `prefix` and `body-code` are lazy seqs whose realization is what runs
       ;; `allocate!`'s side effects into `@locals`. Force them with `doall`
       ;; BEFORE reading `@locals` for the locals declaration below -- otherwise
@@ -2678,7 +2931,12 @@
                                         [0x10 (get intrinsic-indices 'typed-assert-ref)
                                          ::local-set index])))
                             (map-indexed vector (:param-types function))))
-            body-code (doall (emit* (:body function) env))
+            body-code (doall (emit* (:body function) env 0))
+            body-code (doall
+                       (if structured-loop?
+                         (concat [0x02 (wasm-type (:result function)) 0x03 0x40]
+                                 body-code [0x0c 0x01 0x0b 0x00 0x0b])
+                         body-code))
             body-code (doall
                        (if (reference-type? (:result function))
                          (concat (i32-const (descriptor-id (:result function))) body-code
@@ -2709,12 +2967,31 @@
         charge (when-not (loop-helper-name? (:name function))
                  [0x23 0 0x50 0x04 0x40 0x00 0x0b ; global.get;eqz;if;unreachable;end
                   0x23 0 0x42 1 0x7d 0x24 0])       ; global.get;const 1;sub;global.set
+        loop-helper? (and (loop-helper-name? (:name function))
+                          (structured-loop-body? (:name function)
+                                                 (count (:params function))
+                                                 (:body function)))
+        body-code (emit-expr (:body function) param-env
+                             (cond-> {:function-indices function-indices
+                                      :intrinsic-indices intrinsic-indices
+                                      :next-local (count (:params function))}
+                               loop-helper?
+                               (assoc :tail-loop-name (:name function)
+                                      :tail-loop-depth 0)))
+        ;; The outer block carries the helper's i64 result. The inner loop has
+        ;; no result: a terminal expression branches out with its value, while
+        ;; a synthesized recur updates parameters and branches back.
+        body-code (if loop-helper?
+                    (concat [0x02 0x7e 0x03 0x40]
+                            body-code
+                            ;; Terminal values branch to the outer result
+                            ;; block. The loop's syntactic fallthrough is
+                            ;; impossible, but `unreachable` supplies the
+                            ;; validator's polymorphic stack before block end.
+                            [0x0c 0x01 0x0b 0x00 0x0b])
+                    body-code)
         instructions (encode-local-operands
-                      (concat (or charge [])
-                              (emit-expr (:body function) param-env
-                                      {:function-indices function-indices
-                                       :intrinsic-indices intrinsic-indices
-                                       :next-local (count (:params function))})))
+                      (concat (or charge []) body-code))
         body (concat declarations instructions [0x0b])]
     (concat (uleb (count body)) body)))
 
@@ -2741,6 +3018,161 @@
 (defn- i64-word-typed-cap? [contract]
   (and (= :i64 (:request-type contract))
        (= :i64 (:result-type contract))))
+(def ^:private scalar-vector-local-limit
+  "Maximum literal width represented as individual Wasm locals. This bounds
+  local declarations and selector depth independently of the larger
+  host-backed vector limit."
+  32)
+
+(defn- scalar-replaced-vector-at?
+  "True when an immutable i64 vector literal is consumed by one immediate
+  indexed read.  The aggregate cannot escape this expression, so the typed
+  emitter may keep its elements in Wasm locals instead of materializing an
+  externref in the host runtime."
+  [form]
+  (and (seq? form)
+       (= 'vector-at (first form))
+       (= 3 (count form))
+       (let [value (second form)]
+         (and (seq? value)
+              (= 'vector-new (first value))
+              (<= (count (rest value)) scalar-vector-local-limit)))))
+
+(defn- scalar-replaced-vector-count?
+  "True when an immediate bounded i64 vector literal is consumed only for its
+  count. Item expressions still execute left-to-right before the constant
+  count is returned."
+  [form]
+  (and (seq? form)
+       (= 'vector-count (first form))
+       (= 2 (count form))
+       (let [value (second form)]
+         (and (seq? value)
+              (= 'vector-new (first value))
+              (<= (count (rest value)) scalar-vector-local-limit)))))
+
+(defn- scalar-vector-uses
+  "Return [valid? use-count]. Every unshadowed target occurrence must be the
+  vector operand of `vector-at` or `vector-count`; nested same-named lets are
+  handled with their real initializer/body scope."
+  [form target shadowed?]
+  (cond
+    (symbol? form)
+    [(or shadowed? (not= form target)) 0]
+
+    (seq? form)
+    (let [[op & args] form]
+      (cond
+        (= op 'let)
+        (let [[bindings body] args
+              [valid? uses shadowed?]
+              (loop [pairs (partition 2 bindings)
+                     valid? true uses 0 shadowed? shadowed?]
+                (if-let [[name value] (first pairs)]
+                  (let [[value-valid? value-uses]
+                        (scalar-vector-uses value target shadowed?)]
+                    (recur (next pairs)
+                           (and valid? value-valid?)
+                           (+ uses value-uses)
+                           (or shadowed? (= name target))))
+                  [valid? uses shadowed?]))
+              [body-valid? body-uses]
+              (scalar-vector-uses body target shadowed?)]
+          [(and valid? body-valid?) (+ uses body-uses)])
+
+        (and (= op 'vector-at) (= 2 (count args))
+             (not shadowed?) (= target (first args)))
+        (let [[index-valid? index-uses]
+              (scalar-vector-uses (second args) target shadowed?)]
+          [index-valid? (inc index-uses)])
+
+        (and (= op 'vector-count) (= 1 (count args))
+             (not shadowed?) (= target (first args)))
+        [true 1]
+
+        :else
+        (reduce (fn [[valid? uses] item]
+                  (let [[item-valid? item-uses]
+                        (scalar-vector-uses item target shadowed?)]
+                    [(and valid? item-valid?) (+ uses item-uses)]))
+                [true 0] args)))
+
+    (coll? form)
+    (reduce (fn [[valid? uses] item]
+              (let [[item-valid? item-uses]
+                    (scalar-vector-uses item target shadowed?)]
+                [(and valid? item-valid?) (+ uses item-uses)]))
+            [true 0] form)
+
+    :else [true 0]))
+
+(defn- host-runtime-form
+  "Erase only scalar-replaceable aggregate shells for host-import analysis.
+  Element and index expressions remain in evaluation order so any nested
+  string, capability, or other reference operation still requires the typed
+  runtime.  This changes import selection only; the sealed KIR and metadata
+  retain the source-level vector descriptor."
+  ([form] (host-runtime-form form #{}))
+  ([form scalar-vectors]
+   (cond
+     (scalar-replaced-vector-at? form)
+     (let [items (rest (second form))
+           index (nth form 2)]
+       (apply list 'do (concat (map #(host-runtime-form % scalar-vectors) items)
+                               [(host-runtime-form index scalar-vectors) 0])))
+
+     (and (seq? form) (= 'vector-at (first form))
+          (symbol? (second form)) (contains? scalar-vectors (second form)))
+     (list 'do (host-runtime-form (nth form 2) scalar-vectors) 0)
+
+     (scalar-replaced-vector-count? form)
+     (apply list 'do
+            (concat (map #(host-runtime-form % scalar-vectors)
+                         (rest (second form)))
+                    [0]))
+
+     (and (seq? form) (= 'vector-count (first form))
+          (symbol? (second form)) (contains? scalar-vectors (second form)))
+     0
+
+     (and (seq? form) (= 'let (first form)))
+     (let [[bindings body] (rest form)
+           [rewritten scalar-vectors]
+           (loop [pairs (partition 2 bindings)
+                  rewritten [] scalar-vectors scalar-vectors]
+             (if-let [[name value] (first pairs)]
+               (let [future-scope (list 'let
+                                        (vec (mapcat identity (rest pairs)))
+                                        body)
+                     [valid? uses] (if (and (seq? value)
+                                            (= 'vector-new (first value))
+                                            (<= (count (rest value))
+                                                scalar-vector-local-limit))
+                                     (scalar-vector-uses future-scope name false)
+                                     [false 0])
+                     scalar-vector? (and valid? (pos? uses))
+                     rewritten-value
+                     (if scalar-vector?
+                       (apply list 'do
+                              (concat (map #(host-runtime-form % scalar-vectors)
+                                           (rest value))
+                                      [0]))
+                       (host-runtime-form value scalar-vectors))]
+                 (recur (next pairs)
+                        (conj rewritten name rewritten-value)
+                        (cond-> (disj scalar-vectors name)
+                          scalar-vector? (conj name))))
+               [rewritten scalar-vectors]))]
+       (list 'let rewritten (host-runtime-form body scalar-vectors)))
+
+     (seq? form) (apply list (map #(host-runtime-form % scalar-vectors) form))
+     (vector? form) (mapv #(host-runtime-form % scalar-vectors) form)
+     :else form)))
+
+(defn- host-runtime-kir [kir]
+  (update kir :functions
+          (fn [functions]
+            (mapv #(update % :body host-runtime-form) functions))))
 
 (def default-fuel
   "Historical fixed call budget. Every caller that supplies no `:fuel` gets
@@ -2906,8 +3338,9 @@
            (ex-info
             "canonical scalar Component capability requires a named import"
             {:phase :wasm-component-scalar-lowering})))
+        runtime-kir (host-runtime-kir kir)
         _ (when (and component-canonical-scalars?
-                     (typed/requires-host-runtime? kir {:native-bool? true}))
+                     (typed/requires-host-runtime? runtime-kir {:native-bool? true}))
             (throw (ex-info "canonical scalar Component adapter requires a host value"
                             {:phase :wasm-component-scalar-lowering})))
         exported-names (set (or (:exports kir) (map :name functions)))
@@ -2961,9 +3394,12 @@
         has-keyword-from-string? (uses-operation? functions '#{keyword-from-string})
         has-symbol-from-string? (uses-operation? functions '#{symbol})
         has-bytes-empty? (uses-operation? functions '#{bytes-empty})
+        has-bulk-vector? (and typed?
+                              (uses-operation? (:functions runtime-kir)
+                                               '#{vector-new}))
         typed-imports (when (and typed?
                                  (not component-canonical-scalars?)
-                                 (typed/requires-host-runtime? kir))
+                                 (typed/requires-host-runtime? runtime-kir))
                         (vec (concat
                          [['typed-literal "kotoba:typed" "literal" [0x60 1 0x7f 1 0x6f]]
                          ['typed-new "kotoba:typed" "new" [0x60 2 0x7f 0x7f 1 0x6f]]
@@ -2987,6 +3423,10 @@
                          ;; uses typed-bool-value; host browser-host has bool-value).
                          ['typed-bool-value "kotoba:typed" "bool-value" [0x60 1 0x6f 1 0x7f]]
                          ['typed-equal "kotoba:typed" "equal" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]]
+                         (when has-bulk-vector?
+                           [['typed-vector-from-memory-i64 "kotoba:typed"
+                             "vector-from-memory-i64"
+                             [0x60 3 0x7f 0x7f 0x7f 1 0x6f]]])
                          (when has-bytes-empty?
                            [['typed-bytes-empty "kotoba:typed" "bytes-empty"
                              [0x60 1 0x7f 1 0x6f]]])
@@ -3168,12 +3608,18 @@
                       function-types
                       wrapper-types
                       component-types)
-        import-sec (when (seq imports)
-                     (concat (uleb shift)
+        import-sec (when (or (seq imports) has-bulk-vector?)
+                     (concat (uleb (+ shift (if has-bulk-vector? 1 0)))
                              (mapcat (fn [[_ module field _] index]
                                        (concat (name-bytes module) (name-bytes field)
                                                [0] (uleb index)))
-                                     imports (range))))
+                                     imports (range))
+                             (when has-bulk-vector?
+                               ;; memory import: min=max=2 pages (128 KiB),
+                               ;; exactly the 16,384 × i64 language vector cap.
+                               (concat (name-bytes "kotoba:typed")
+                                       (name-bytes "scratch")
+                                       [0x02 0x01] (uleb 2) (uleb 2)))))
         component-function-count (if component-standard32?
                                    (+ (count exported-functions) 2)
                                    0)
@@ -3203,15 +3649,22 @@
         ;; integer). So the value is a caller-supplied budget here rather than
         ;; a constant baked into codegen; the enforcement mechanism (charge
         ;; per call, trap at zero, no guest replenishment) is unchanged.
+        scratch-global-index (when has-bulk-vector?
+                               (+ 1 (if component-standard32? 1 0)))
         global-sec (vec (concat
-                         (if component-standard32? [2] [1])
+                         [(+ 1 (if component-standard32? 1 0)
+                               (if has-bulk-vector? 1 0))]
                          [0x7e 1 0x42] (sleb fuel-initial) [0x0b]
                          ;; global 1: the bump pointer. Fuel stays global 0 so
                          ;; every function prologue's `global.get 0` is
                          ;; unchanged.
                          (when component-standard32?
                            (concat [0x7f 1 0x41]
-                                   (sleb component-arena-base) [0x0b]))))
+                                   (sleb component-arena-base) [0x0b]))
+                         ;; Private LIFO bump pointer for imported typed scratch.
+                         ;; It is not exported and starts at zero for each module.
+                         (when has-bulk-vector?
+                           [0x7f 1 0x41 0 0x0b])))
         ;; Pure functions are exported with their source names. This makes
         ;; runtime parameters observable and testable without host authority.
         ;; When a :bool ABI wrapper exists, the exported name points at the
@@ -3252,7 +3705,9 @@
                                                        % indices
                                                        (assoc intrinsic-indices
                                                               :component-realloc
-                                                              realloc-function-index)
+                                                              realloc-function-index
+                                                              :typed-scratch-global
+                                                              scratch-global-index)
                                                        descriptor-indices literal-indices signatures
                                                        opts)
                              (function-body % indices intrinsic-indices))
@@ -3278,7 +3733,9 @@
     (let [bytes (concat [0 0x61 0x73 0x6d 1 0 0 0] (section 0 target-sec)
                         (section 0 compatibility-sec)
                         (when typed-sec (section 0 typed-sec))
-                        (section 1 types) (when (seq imports) (section 2 import-sec))
+                        (section 1 types)
+                        (when (or (seq imports) has-bulk-vector?)
+                          (section 2 import-sec))
                         (section 3 function-sec)
                         (when component-standard32?
                           (section 5 [1 1 component-memory-pages memory-maximum]))
