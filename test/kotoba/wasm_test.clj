@@ -89,6 +89,53 @@
       (finally
         (Files/deleteIfExists path)))))
 
+(deftest value-runtime-operations-use-a-dedicated-authority-free-import-namespace
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['intern 'hydrate 'resolve 'cid-of 'release]
+             :schemas {}
+             :effects #{}
+             :functions
+             [{:name 'intern :params ['x] :param-types [:bytes] :result :i64
+               :effects #{} :body '(value-intern x)}
+              {:name 'hydrate :params ['cid] :param-types [:string] :result :i64
+               :effects #{} :body '(value-hydrate cid)}
+              {:name 'resolve :params ['handle] :param-types [:i64] :result :bytes
+               :effects #{} :body '(value-resolve handle)}
+              {:name 'cid-of :params ['handle] :param-types [:i64] :result :string
+               :effects #{} :body '(value-cid-of handle)}
+              {:name 'release :params ['handle] :param-types [:i64] :result :i64
+               :effects #{} :body '(value-release handle)}]}
+        bytes (wasm/emit kir :wasm32-browser-kotoba-v1)
+        path (Files/createTempFile "kotoba-wasm-value-runtime-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (is (= :i64 (typed/infer-type '(value-intern x) {'x :bytes} {})))
+    (is (= :bytes (typed/infer-type '(value-resolve handle) {'handle :i64} {})))
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            printed (:out (shell/sh "wasm-tools" "print" (str path)))]
+        (is (zero? (:exit validated)) (:err validated))
+        (doseq [field ["intern" "hydrate" "resolve" "cid-of" "release"]]
+          (is (str/includes? printed
+                             (str "(import \"kotoba:value-runtime\" \"" field "\""))))
+        (is (not (str/includes? printed "kotoba:cap"))
+            "value identity imports do not imply capability authority"))
+      (finally
+        (Files/deleteIfExists path)))))
+
+(deftest component-packaging-rejects-private-value-runtime-imports
+  (let [kir {:format :kotoba.kir/v4
+             :exports ['intern]
+             :schemas {}
+             :effects #{}
+             :functions [{:name 'intern :params ['x] :param-types [:bytes]
+                          :result :i64 :effects #{} :body '(value-intern x)}]}]
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo
+         #"private value-runtime imports"
+         (wasm/emit kir :wasm32-browser-kotoba-v1
+                    {:component-standard32? true})))))
+
 (deftest vector-count-uses-the-actual-canonical-list-descriptor
   (let [descriptor [:list :string]
         kir {:format :kotoba.kir/v4

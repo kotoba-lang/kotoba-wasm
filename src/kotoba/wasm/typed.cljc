@@ -184,6 +184,9 @@
         (= op 'if) (infer-type (second args) env signatures)
         (= op 'do) (infer-type (last args) env signatures)
         (= op 'typed-cap-call) (nth args 2)
+        (contains? '#{value-intern value-hydrate value-release} op) :i64
+        (= op 'value-resolve) :bytes
+        (= op 'value-cid-of) :string
         (= op 'component-assert-bool) :bool
         (= op 'component-i64-to-i32) :bool
         (= op 'component-i32-to-f32) :f32
@@ -310,4 +313,3 @@
         :else (or (:result (get signatures op))
                   (throw (ex-info "unsupported typed Wasm expression"
                                   {:phase :wasm-typed-lowering :operation op :form form})))))))
-

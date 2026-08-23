@@ -117,6 +117,9 @@
 
 (declare emit-expr)
 
+(def value-runtime-operations
+  '#{value-intern value-hydrate value-resolve value-cid-of value-release})
+
 (defn- emit-many [forms env ctx]
   (mapcat #(emit-expr % env ctx) forms))
 
@@ -1799,6 +1802,9 @@
                         (concat (emit* request env) [0x10 typed-import])
                         (concat (i32-const cap-id) (emit* request env)
                                 [0x10 (get intrinsic-indices 'typed-cap-call)])))
+                    (contains? value-runtime-operations op)
+                    (concat (emit* (first args) env)
+                            [0x10 (get intrinsic-indices op)])
                     (= op 'i64-extend-i32-u)
                     (concat (emit* (first args) env) [0xad])
                     (= op 'component-unreachable)
@@ -2841,6 +2847,8 @@
                               (typed/wasm-type type)))
         has-cap? (uses-operation? functions '#{cap-call})
         has-typed-cap? (uses-operation? functions '#{typed-cap-call})
+        value-ops (set (filter #(uses-operation? functions #{%})
+                               value-runtime-operations))
         _named-capability
         (when (and component-canonical-scalars?
                    has-typed-cap?
@@ -2849,6 +2857,12 @@
            (ex-info
             "canonical scalar Component capability requires a named import"
             {:phase :wasm-component-scalar-lowering})))
+        _value-component
+        (when (and (or component-canonical-scalars? component-standard32?)
+                   (seq value-ops))
+          (throw (ex-info "Component adapter cannot carry private value-runtime imports"
+                          {:phase :wasm-component-value-runtime
+                           :operations value-ops})))
         _ (when (and component-canonical-scalars?
                      (typed/requires-host-runtime? kir {:native-bool? true}))
             (throw (ex-info "canonical scalar Component adapter requires a host value"
@@ -3043,7 +3057,21 @@
                            [['decimal-f64-parse "kotoba:typed" "decimal-f64-parse" [0x60 1 0x6f 1 0x6f]]])
                          (when has-decimal-x3?
                            [['decimal-f64x3-parse "kotoba:typed" "decimal-f64x3-parse" [0x60 1 0x6f 1 0x6f]]]))))
+        value-imports
+        (vec
+         (filter (fn [[op]] (contains? value-ops op))
+                 [['value-intern "kotoba:value-runtime" "intern"
+                   [0x60 1 0x6f 1 0x7e]]
+                  ['value-hydrate "kotoba:value-runtime" "hydrate"
+                   [0x60 1 0x6f 1 0x7e]]
+                  ['value-resolve "kotoba:value-runtime" "resolve"
+                   [0x60 1 0x7e 1 0x6f]]
+                  ['value-cid-of "kotoba:value-runtime" "cid-of"
+                   [0x60 1 0x7e 1 0x6f]]
+                  ['value-release "kotoba:value-runtime" "release"
+                   [0x60 1 0x7e 1 0x7e]]]))
         imports (vec (concat typed-imports
+                      value-imports
                       (if (seq capability-imports)
                         (mapv (fn [{:keys [id module field type]}]
                                 [[:capability id] module field type])
