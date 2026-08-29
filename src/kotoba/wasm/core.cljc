@@ -46,15 +46,34 @@
                       (and (= n' (js/BigInt -1)) (not (zero? (bit-and b 0x40)))))]
          (if done (conj out b) (recur n' (conj out (bit-or b 0x80))))))))
 
+(def ^:private operand-opcodes
+  "Instructions whose operand is a ULEB128 index rather than a raw byte.
+
+  A Wasm index operand is ULEB128, so any value above 127 needs two bytes.
+  Writing it as one byte does not merely truncate: the high bit is the LEB
+  CONTINUATION bit, so the decoder swallows the NEXT instruction byte and
+  reports an index that never existed. Measured 2026-08-29 on a module with
+  183 functions -- a call to function 182 (0xB6) emitted as one byte decoded
+  as `function index #694 is out of bounds`, which is 54 + (5 << 7): 0xB6's
+  low seven bits plus the following 0x05 opcode.
+
+  `call` was the instruction that fired, because a program has to reach 129
+  functions before any index needs a second byte and nothing had. Every call
+  site in this file wrote `[::call index]` directly, and three wrote
+  `[0x10] (uleb index)`; the tokens below make the correct form the only
+  form."
+  {::call 0x10})
+
 (defn- encode-local-operands [tokens]
   (loop [remaining (seq tokens) encoded []]
     (if-not remaining
       encoded
       (let [token (first remaining)]
-        (if (contains? #{::local-get ::local-set ::local-tee} token)
+        (if (or (contains? #{::local-get ::local-set ::local-tee} token)
+                (contains? operand-opcodes token))
           (let [index (second remaining)]
             (when-not (and (integer? index) (<= 0 index))
-              (throw (ex-info "invalid Wasm local index"
+              (throw (ex-info "invalid Wasm index operand"
                               {:phase :wasm-local-encoding
                                :operation token :index index})))
             (recur (nnext remaining)
@@ -62,7 +81,8 @@
                          (concat [(case token
                                     ::local-get 0x20
                                     ::local-set 0x21
-                                    ::local-tee 0x22)]
+                                    ::local-tee 0x22
+                                    (get operand-opcodes token))]
                                  (uleb index)))))
           (recur (next remaining) (conj encoded token)))))))
 
@@ -176,7 +196,7 @@
         (= op 'cap-call)
         (let [[cap-id value] args]
           (concat [0x42] (sleb cap-id) (emit-expr value env ctx)
-                  [0x10 (get intrinsic-indices 'cap-call)]))
+                  [::call (get intrinsic-indices 'cap-call)]))
 
         (= op 'typed-cap-call)
         (let [[cap-id request-type result-type request] args
@@ -184,7 +204,7 @@
               request-bytes (emit-expr request env ctx)]
           (cond
             typed-import
-            (concat request-bytes [0x10 typed-import])
+            (concat request-bytes [::call typed-import])
             ;; Word-typed i64/i64 is the ABI `clock/now` actually elaborates
             ;; to. The generic `kotoba:typed`/`cap-call` import is
             ;; (i32, externref)->externref, so lowering an i64 seed through
@@ -193,13 +213,13 @@
             ;; `kotoba:cap`/`call` (i64, i64)->i64 import instead.
             (and (= request-type :i64) (= result-type :i64))
             (concat [0x42] (sleb cap-id) request-bytes
-                    [0x10 (get intrinsic-indices 'cap-call)])
+                    [::call (get intrinsic-indices 'cap-call)])
             :else
             (concat [0x41] (sleb cap-id) request-bytes
-                    [0x10 (get intrinsic-indices 'typed-cap-call)])))
+                    [::call (get intrinsic-indices 'typed-cap-call)])))
 
         (contains? '#{pair pair-first pair-second} op)
-        (concat (emit-many args env ctx) [0x10 (get intrinsic-indices op)])
+        (concat (emit-many args env ctx) [::call (get intrinsic-indices op)])
 
         (contains? '#{+ - * quot bit-xor bit-and bit-or} op)
         (let [opcode ({'+ 0x7c '- 0x7d '* 0x7e 'quot 0x7f
@@ -262,7 +282,7 @@
                 [0x0c] (uleb tail-loop-depth))
 
         :else
-        (concat (emit-many args env ctx) [0x10 (get function-indices op)]))))) ; call
+        (concat (emit-many args env ctx) [::call (get function-indices op)]))))) ; call
 
 (defn- i32-const [value] (into [0x41] (sleb value)))
 
@@ -539,10 +559,10 @@
     (concat
      (i32-const 0) (i32-const 0)
      (i32-const result-alignment) (i32-const result-size)
-     [0x10 realloc-index ::local-set result-local]
+     [::call realloc-index ::local-set result-local]
      (i32-const 1)
      (mapcat #(emit* % env) request-values)
-     [::local-get result-local 0x10 typed-import]
+     [::local-get result-local ::call typed-import]
      [::local-get result-local 0x41] (sleb (dec result-alignment))
      [0x71 0x45 0x04 0x40 0x05 0x00 0x0b
       ::local-get result-local 0x41] (sleb result-size)
@@ -890,25 +910,25 @@
             ;; path and the word on the stack is not an externref.
             (box-bool [code]
               ;; i64 word -> i32 -> host boolean (externref)
-              (concat code [0xa7] [0x10 (get intrinsic-indices 'typed-bool)]))
+              (concat code [0xa7] [::call (get intrinsic-indices 'typed-bool)]))
             (unbox-bool [code]
               ;; host boolean (externref) -> i32 -> i64 word
-              (concat code [0x10 (get intrinsic-indices 'typed-bool-value)] [0xad]))
+              (concat code [::call (get intrinsic-indices 'typed-bool-value)] [0xad]))
             (emit-builder [type tag item-forms item-types env]
               (let [initial (concat (i32-const (descriptor-id type)) (i32-const tag)
-                                    [0x10 (get intrinsic-indices 'typed-new)])
+                                    [::call (get intrinsic-indices 'typed-new)])
                     pushed (reduce (fn [code [item item-type]]
                                      (let [value (emit* item env)
                                            value (if (= :bool item-type)
                                                    (box-bool value)
                                                    value)]
                                        (concat code value
-                                               [0x10 (get intrinsic-indices
+                                               [::call (get intrinsic-indices
                                                           (symbol (str "typed-push-"
                                                                        (scalar-suffix item-type))))])))
                                    initial (map vector item-forms item-types))]
                 (concat (i32-const (descriptor-id type)) pushed
-                        [0x10 (get intrinsic-indices 'typed-seal)])))
+                        [::call (get intrinsic-indices 'typed-seal)])))
             (emit-vector-i64-bulk [items env]
               ;; Materialized vector literals use a host-owned, fixed two-page
               ;; scratch memory. Each item is evaluated once, left-to-right,
@@ -940,7 +960,7 @@
                  (i32-const (descriptor-id :vector-i64))
                  [::local-get offset-local]
                  (i32-const (count items))
-                 [0x10 (get intrinsic-indices 'typed-vector-from-memory-i64)
+                 [::call (get intrinsic-indices 'typed-vector-from-memory-i64)
                   ::local-set result-local
                   ;; Normal completion releases exactly this LIFO slice.
                   ::local-get offset-local 0x24 scratch-global
@@ -984,7 +1004,7 @@
             (emit-get [type value-form index item-type env]
               (let [code (concat (i32-const (descriptor-id type)) (emit* value-form env)
                                  (i32-const index)
-                                 [0x10 (get intrinsic-indices
+                                 [::call (get intrinsic-indices
                                             (symbol (str "typed-get-" (scalar-suffix item-type))))])]
                 (if (= :bool item-type) (unbox-bool code) code)))
             (emit-bool [code]
@@ -997,7 +1017,7 @@
             (emit-equal [type left right env]
               (concat (i32-const (descriptor-id type))
                       (emit* left env) (emit* right env)
-                      [0x10 (get intrinsic-indices 'typed-equal) 0xad]))
+                      [::call (get intrinsic-indices 'typed-equal) 0xad]))
             (emit-test [form env]
               (let [type (typed/infer-type
                           form
@@ -1686,12 +1706,12 @@
                  request-items
                  (i32-const 0) (i32-const 0)
                  (i32-const result-alignment) (i32-const result-size)
-                 [0x10 realloc-index ::local-set result-local]
+                 [::call realloc-index ::local-set result-local]
                  (i32-const 1)
                  [::local-get (:pointer-local request)
                   ::local-get (:count-local request)
                   ::local-get result-local
-                  0x10 typed-import]
+                  ::call typed-import]
                  [::local-get result-local 0x41] (sleb (dec result-alignment))
                  [0x71 0x45 0x04 0x40 0x05 0x00 0x0b
                   ::local-get result-local 0x41] (sleb result-size)
@@ -1778,12 +1798,12 @@
                  request-items
                  (i32-const 0) (i32-const 0)
                  (i32-const result-alignment) (i32-const result-size)
-                 [0x10 realloc-index ::local-set result-local]
+                 [::call realloc-index ::local-set result-local]
                  (i32-const request-disc)
                  [::local-get (:pointer-local request)
                   ::local-get (:count-local request)
                   ::local-get result-local
-                  0x10 typed-import]
+                  ::call typed-import]
                  [::local-get result-local 0x41] (sleb (dec result-alignment))
                  [0x71 0x45 0x04 0x40 0x05 0x00 0x0b
                   ::local-get result-local 0x41] (sleb result-size)
@@ -1855,7 +1875,7 @@
             (emit-assoc [type value index replacement replacement-type env]
               (concat (i32-const (descriptor-id type)) (emit* value env)
                       (i32-const index) (emit* replacement env)
-                      [0x10 (get intrinsic-indices
+                      [::call (get intrinsic-indices
                                  (symbol (str "typed-assoc-"
                                               (scalar-suffix replacement-type))))]))
             (emit-match [type value-form branches env]
@@ -1869,7 +1889,7 @@
                                  signatures)
                     setup (concat (emit* value-form env) [::local-set value-local]
                                   (i32-const (descriptor-id type)) [::local-get value-local]
-                                  [0x10 (get intrinsic-indices 'typed-tag) ::local-set tag-local])
+                                  [::call (get intrinsic-indices 'typed-tag) ::local-set tag-local])
                     emit-branches
                     (fn emit-branches [index remaining]
                       (let [[_ binder body] (first remaining)
@@ -1941,7 +1961,7 @@
                 (let [literal [(if (string? form) :string :keyword)
                                (if (keyword? form) (str form) form)]]
                   (concat (i32-const (get literal-indices literal))
-                          [0x10 (get intrinsic-indices 'typed-literal)]))
+                          [::call (get intrinsic-indices 'typed-literal)]))
                 (symbol? form)
                 (let [{:keys [index representation]} (get env form)]
                   (cond-> [::local-get index]
@@ -2029,13 +2049,13 @@
                         ;; A typed import takes the request directly; the
                         ;; capability id is carried by the import identity, not
                         ;; passed as an operand.
-                        (concat request-bytes [0x10 typed-import])
+                        (concat request-bytes [::call typed-import])
                         (and (= request-type :i64) (= result-type :i64))
                         (concat [0x42] (sleb cap-id) request-bytes
-                                [0x10 (get intrinsic-indices 'cap-call)])
+                                [::call (get intrinsic-indices 'cap-call)])
                         :else
                         (concat (i32-const cap-id) request-bytes
-                                [0x10 (get intrinsic-indices 'typed-cap-call)])))
+                                [::call (get intrinsic-indices 'typed-cap-call)])))
                     (= op 'i64-extend-i32-u)
                     (concat (emit* (first args) env) [0xad])
                     (= op 'component-unreachable)
@@ -2340,7 +2360,7 @@
                                 (mapcat #(concat (emit* % env) [opcode]) (rest args)))))
                     (contains? '#{pair pair-first pair-second} op)
                     (concat (mapcat #(emit* % env) args)
-                            [0x10 (get intrinsic-indices op)])
+                            [::call (get intrinsic-indices op)])
                     (= op 'i32-wrap)
                     (concat (emit-i32* (first args) env) [0xac])
                     (= op 'u32-wrap)
@@ -2370,48 +2390,48 @@
                              (if (= op 'u32-shift-right) 0xad 0xac)])
                     (= op 'string-byte-length)
                     (concat (i32-const (descriptor-id :string)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-count)])
+                            [::call (get intrinsic-indices 'typed-count)])
                     (= op 'string-concat)
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-string-concat)])
+                            [::call (get intrinsic-indices 'typed-string-concat)])
                     (= op 'string-substring)
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
                             (emit* (nth args 2) env)
-                            [0x10 (get intrinsic-indices 'typed-string-substring)])
+                            [::call (get intrinsic-indices 'typed-string-substring)])
                     (= op 'string-replace-all)
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
                             (emit* (nth args 2) env)
-                            [0x10 (get intrinsic-indices 'typed-string-replace-all)])
+                            [::call (get intrinsic-indices 'typed-string-replace-all)])
                     (= op 'string-contains?)
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-string-contains) 0xad])
+                            [::call (get intrinsic-indices 'typed-string-contains) 0xad])
                     (= op 'string-split-count)
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-string-split-count) 0xad])
+                            [::call (get intrinsic-indices 'typed-string-split-count) 0xad])
                     (= op 'string-code-point-at)
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-string-code-point-at) 0xad])
+                            [::call (get intrinsic-indices 'typed-string-code-point-at) 0xad])
                     (= op 'string-fold-case)
                     (concat (i32-const (descriptor-id :string)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-string-fold-case)])
+                            [::call (get intrinsic-indices 'typed-string-fold-case)])
                     (= op 'keyword-name)
                     (concat (i32-const (descriptor-id :keyword)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-keyword-name)])
+                            [::call (get intrinsic-indices 'typed-keyword-name)])
                     (= op 'keyword-from-string)
                     (concat (i32-const (descriptor-id :keyword)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-keyword-from-string)])
+                            [::call (get intrinsic-indices 'typed-keyword-from-string)])
                     (= op 'symbol)
                     (concat (i32-const (descriptor-id :symbol)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-symbol-from-string)])
+                            [::call (get intrinsic-indices 'typed-symbol-from-string)])
                     (= op 'bytes-empty)
                     (concat (i32-const (descriptor-id :bytes))
-                            [0x10 (get intrinsic-indices 'typed-bytes-empty)])
+                            [::call (get intrinsic-indices 'typed-bytes-empty)])
                     (= op 'vector-new)
                     (if (get intrinsic-indices 'typed-vector-from-memory-i64)
                       (emit-vector-i64-bulk args env)
@@ -2446,7 +2466,7 @@
                                        :type value-type})))
                           (concat (i32-const (descriptor-id value-type))
                                   (emit* value env)
-                                  [0x10 (get intrinsic-indices 'typed-count)]))))
+                                  [::call (get intrinsic-indices 'typed-count)]))))
                     (= op 'vector-at)
                     (let [[value index] args]
                       (cond
@@ -2460,7 +2480,7 @@
                         :else
                         (concat (i32-const (descriptor-id :vector-i64))
                                 (emit* value env) (emit* index env)
-                                [0x10 (get intrinsic-indices 'typed-vector-at-i64)])))
+                                [::call (get intrinsic-indices 'typed-vector-at-i64)])))
                     (= op 'vector-get)
                     (let [[value index fallback] args
                           value-local (allocate! 0x6f)
@@ -2469,65 +2489,65 @@
                               (emit* index env) [::local-set index-local]
                               [::local-get index-local 0x42 0 0x59 ::local-get index-local]
                               (i32-const (descriptor-id :vector-i64)) [::local-get value-local]
-                              [0x10 (get intrinsic-indices 'typed-count) 0x54 0x71 0x04 0x7e]
+                              [::call (get intrinsic-indices 'typed-count) 0x54 0x71 0x04 0x7e]
                               (i32-const (descriptor-id :vector-i64))
                               [::local-get value-local ::local-get index-local
-                               0x10 (get intrinsic-indices 'typed-vector-at-i64) 0x05]
+                               ::call (get intrinsic-indices 'typed-vector-at-i64) 0x05]
                               (emit* fallback env) [0x0b]))
                     (= op 'vector-drop)
                     (concat (i32-const (descriptor-id :vector-i64))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-vector-drop)])
+                            [::call (get intrinsic-indices 'typed-vector-drop)])
                     (= op 'vector-assoc)
                     (concat (i32-const (descriptor-id :vector-i64))
                             (emit* (first args) env) (emit* (second args) env)
                             (emit* (nth args 2) env)
-                            [0x10 (get intrinsic-indices 'typed-vector-assoc-i64)])
+                            [::call (get intrinsic-indices 'typed-vector-assoc-i64)])
                     (= op 'vector-conj)
                     (concat (i32-const (descriptor-id :vector-i64))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-vector-conj-i64)])
+                            [::call (get intrinsic-indices 'typed-vector-conj-i64)])
                     (= op 'vector-f64-new)
                     (emit-builder :vector-f64 -1 args (repeat (count args) :f64) env)
                     (= op 'vector-f64-count)
                     (concat (i32-const (descriptor-id :vector-f64)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-count)])
+                            [::call (get intrinsic-indices 'typed-count)])
                     (= op 'string-index-new)
                     (concat (i32-const (descriptor-id :string-index))
-                            [0x10 (get intrinsic-indices 'typed-string-index-new)])
+                            [::call (get intrinsic-indices 'typed-string-index-new)])
                     (= op 'string-index-count)
                     (concat (i32-const (descriptor-id :string-index)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-count)])
+                            [::call (get intrinsic-indices 'typed-count)])
                     (= op 'string-index-contains)
                     (emit-bool
                      (concat (i32-const (descriptor-id :string-index))
                              (emit* (first args) env) (emit* (second args) env)
-                             [0x10 (get intrinsic-indices 'typed-string-index-contains)]))
+                             [::call (get intrinsic-indices 'typed-string-index-contains)]))
                     (= op 'string-index-get)
                     (concat (i32-const (descriptor-id :string-index))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-string-index-get)])
+                            [::call (get intrinsic-indices 'typed-string-index-get)])
                     (= op 'string-index-assoc)
                     (concat (i32-const (descriptor-id :string-index))
                             (emit* (first args) env) (emit* (second args) env)
                             (emit* (nth args 2) env)
-                            [0x10 (get intrinsic-indices 'typed-string-index-assoc)])
+                            [::call (get intrinsic-indices 'typed-string-index-assoc)])
                     (= op 'disjoint-set-i64-new)
                     (concat (i32-const (descriptor-id :disjoint-set-i64))
                             (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-disjoint-set-i64-new)])
+                            [::call (get intrinsic-indices 'typed-disjoint-set-i64-new)])
                     (= op 'disjoint-set-i64-count)
                     (concat (i32-const (descriptor-id :disjoint-set-i64))
                             (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-count)])
+                            [::call (get intrinsic-indices 'typed-count)])
                     (= op 'disjoint-set-i64-union)
                     (concat (i32-const (descriptor-id :disjoint-set-i64))
                             (emit* (first args) env) (emit* (second args) env)
                             (emit* (nth args 2) env)
-                            [0x10 (get intrinsic-indices 'typed-disjoint-set-i64-union)])
+                            [::call (get intrinsic-indices 'typed-disjoint-set-i64-union)])
                     (= op 'document-null)
                     (concat (i32-const (descriptor-id :document))
-                            [0x10 (get intrinsic-indices 'typed-document-null)])
+                            [::call (get intrinsic-indices 'typed-document-null)])
                     (contains? '#{document-bool document-i64 document-f64
                                   document-string document-keyword document-symbol} op)
                     (let [value-code (emit* (first args) env)
@@ -2535,11 +2555,11 @@
                           ;; profile-5 words must box first.
                           value-code (if (= op 'document-bool)
                                        (concat value-code [0xa7]
-                                               [0x10 (get intrinsic-indices 'typed-bool)])
+                                               [::call (get intrinsic-indices 'typed-bool)])
                                        value-code)]
                       (concat (i32-const (descriptor-id :document))
                               value-code
-                              [0x10 (get intrinsic-indices
+                              [::call (get intrinsic-indices
                                          ({'document-bool 'typed-document-bool
                                            'document-i64 'typed-document-i64
                                            'document-f64 'typed-document-f64
@@ -2565,16 +2585,16 @@
                      env)
                     (= op 'document-count)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-count)])
+                            [::call (get intrinsic-indices 'typed-count)])
                     (= op 'document-kind)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-document-kind)])
+                            [::call (get intrinsic-indices 'typed-document-kind)])
                     (contains? '#{document-vector-at document-list-at document-map-entry-at document-vector-assoc
                                   document-vector-conj document-vector-drop
                                   document-vector-remove} op)
                     (concat (i32-const (descriptor-id :document))
                             (mapcat #(emit* % env) args)
-                            [0x10 (get intrinsic-indices
+                            [::call (get intrinsic-indices
                                        ({'document-vector-at 'typed-document-vector-at
                                          'document-list-at 'typed-document-list-at
                                          'document-map-entry-at 'typed-document-map-entry-at
@@ -2586,38 +2606,38 @@
                     (emit-bool
                      (concat (i32-const (descriptor-id :document))
                              (emit* (first args) env) (emit* (second args) env)
-                             [0x10 (get intrinsic-indices 'typed-document-contains)]))
+                             [::call (get intrinsic-indices 'typed-document-contains)]))
                     (= op 'document-set-contains?)
                     (emit-bool
                      (concat (i32-const (descriptor-id :document))
                              (emit* (first args) env) (emit* (second args) env)
-                             [0x10 (get intrinsic-indices 'typed-document-set-contains)]))
+                             [::call (get intrinsic-indices 'typed-document-set-contains)]))
                     (= op 'document-equal?)
                     (emit-bool
                      (concat (i32-const (descriptor-id :document))
                              (emit* (first args) env) (emit* (second args) env)
-                             [0x10 (get intrinsic-indices 'typed-equal)]))
+                             [::call (get intrinsic-indices 'typed-equal)]))
                     (= op 'document-sha256)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-document-sha256)])
+                            [::call (get intrinsic-indices 'typed-document-sha256)])
                     (= op 'document-print)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-document-print)])
+                            [::call (get intrinsic-indices 'typed-document-print)])
                     (= op 'document-read)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-document-read)])
+                            [::call (get intrinsic-indices 'typed-document-read)])
                     (= op 'document-edn-print)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-document-edn-print)])
+                            [::call (get intrinsic-indices 'typed-document-edn-print)])
                     (= op 'document-edn-read)
                     (concat (i32-const (descriptor-id :document)) (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'typed-document-edn-read)])
+                            [::call (get intrinsic-indices 'typed-document-edn-read)])
                     (contains? '#{document-get document-assoc document-dissoc
                                   document-merge document-string-value document-bool-value
                                   document-keyword-value document-symbol-value document-i64-value document-f64-value} op)
                     (concat (i32-const (descriptor-id :document))
                             (mapcat #(emit* % env) args)
-                            [0x10 (get intrinsic-indices
+                            [::call (get intrinsic-indices
                                        ({'document-get 'typed-document-get
                                          'document-assoc 'typed-document-assoc
                                          'document-dissoc 'typed-document-dissoc
@@ -2631,7 +2651,7 @@
                     (= op 'vector-f64-at)
                     (concat (i32-const (descriptor-id :vector-f64))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-vector-at-f64)])
+                            [::call (get intrinsic-indices 'typed-vector-at-f64)])
                     (= op 'vector-f64-get)
                     (let [[value index fallback] args
                           value-local (allocate! 0x6f)
@@ -2640,28 +2660,28 @@
                               (emit* index env) [::local-set index-local]
                               [::local-get index-local 0x42 0 0x59 ::local-get index-local]
                               (i32-const (descriptor-id :vector-f64)) [::local-get value-local]
-                              [0x10 (get intrinsic-indices 'typed-count) 0x54 0x71 0x04 0x7c]
+                              [::call (get intrinsic-indices 'typed-count) 0x54 0x71 0x04 0x7c]
                               (i32-const (descriptor-id :vector-f64))
                               [::local-get value-local ::local-get index-local
-                               0x10 (get intrinsic-indices 'typed-vector-at-f64) 0x05]
+                               ::call (get intrinsic-indices 'typed-vector-at-f64) 0x05]
                               (emit* fallback env) [0x0b]))
                     (= op 'vector-f64-drop)
                     (concat (i32-const (descriptor-id :vector-f64))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-vector-drop)])
+                            [::call (get intrinsic-indices 'typed-vector-drop)])
                     (= op 'vector-f64-assoc)
                     (concat (i32-const (descriptor-id :vector-f64))
                             (emit* (first args) env) (emit* (second args) env)
                             (emit* (nth args 2) env)
-                            [0x10 (get intrinsic-indices 'typed-vector-assoc-f64)])
+                            [::call (get intrinsic-indices 'typed-vector-assoc-f64)])
                     (= op 'vector-f64-conj)
                     (concat (i32-const (descriptor-id :vector-f64))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-vector-conj-f64)])
+                            [::call (get intrinsic-indices 'typed-vector-conj-f64)])
                     (= op 'string=?)
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'typed-equal) 0xad])
+                            [::call (get intrinsic-indices 'typed-equal) 0xad])
                     (= op 'bool-not)
                     (emit-bool (concat (emit-test (first args) env) [0x45]))
                     (contains? '#{option-some option-none} op)
@@ -2681,7 +2701,7 @@
                       (emit-bool
                        (concat (i32-const (descriptor-id type))
                                (emit* (first args) env)
-                               [0x10 (get intrinsic-indices 'typed-tag)])))
+                               [::call (get intrinsic-indices 'typed-tag)])))
                     (contains? '#{option-value result-value result-error} op)
                     (let [[value fallback] args
                           type (if (= op 'option-value)
@@ -2691,7 +2711,7 @@
                       (concat (emit* value env) [::local-set value-local]
                               (i32-const (descriptor-id type))
                               [::local-get value-local
-                               0x10 (get intrinsic-indices 'typed-tag)]
+                               ::call (get intrinsic-indices 'typed-tag)]
                               (i32-const wanted) [0x46 0x04 0x7e]
                               (emit-get type {:wasm-local value-local} 0 :i64 env)
                               [0x05] (emit* fallback env) [0x0b]))
@@ -2750,7 +2770,7 @@
                                                        signatures)]
                       (concat (emit* value env) [::local-set value-local]
                               (i32-const (descriptor-id type)) [::local-get value-local]
-                              [0x10 (get intrinsic-indices 'typed-tag) 0x04
+                              [::call (get intrinsic-indices 'typed-tag) 0x04
                                (wasm-type result-type)]
                               (emit-get type {:wasm-local value-local} 0 binder-type env)
                               [::local-set binder-local]
@@ -2769,7 +2789,7 @@
                                                        signatures)]
                       (concat (emit* value env) [::local-set value-local]
                               (i32-const (descriptor-id type)) [::local-get value-local]
-                              [0x10 (get intrinsic-indices 'typed-tag) 0x04
+                              [::call (get intrinsic-indices 'typed-tag) 0x04
                                (wasm-type result-type)]
                               (emit-get type {:wasm-local value-local} 0 ok-type env)
                               [::local-set ok-local]
@@ -2792,7 +2812,7 @@
                     (contains? '#{option-some?-of result-ok?-of} op)
                     (let [[type value] args]
                       (emit-bool (concat (i32-const (descriptor-id type)) (emit* value env)
-                                         [0x10 (get intrinsic-indices 'typed-tag)])))
+                                         [::call (get intrinsic-indices 'typed-tag)])))
                     (contains? '#{option-value-of result-value-of result-error-of} op)
                     (let [[type value fallback] args
                           wanted (if (= op 'result-error-of) 0 1)
@@ -2803,7 +2823,7 @@
                           value-local (allocate! 0x6f)]
                       (concat (emit* value env) [::local-set value-local]
                               (i32-const (descriptor-id type)) [::local-get value-local]
-                              [0x10 (get intrinsic-indices 'typed-tag)]
+                              [::call (get intrinsic-indices 'typed-tag)]
                               (i32-const wanted) [0x46 0x04 (wasm-type payload-type)]
                               (emit-get type {:wasm-local value-local} 0 payload-type env)
                               [0x05] (emit* fallback env) [0x0b]))
@@ -2824,7 +2844,7 @@
                           contains? (= op 'typed-set-contains)
                           code (concat (i32-const (descriptor-id type)) (emit* value env)
                                        (when-not contains? (i32-const operation)) (emit* item env)
-                                       [0x10 (get intrinsic-indices
+                                       [::call (get intrinsic-indices
                                                   (if contains?
                                                     (if (= item-type :i64)
                                                       'typed-set-contains-i64 'typed-set-contains-ref)
@@ -2834,7 +2854,7 @@
                     (contains? '#{hetero-vector-count typed-set-count} op)
                     (let [[type value] args]
                       (concat (i32-const (descriptor-id type)) (emit* value env)
-                              [0x10 (get intrinsic-indices 'typed-count)]))
+                              [::call (get intrinsic-indices 'typed-count)]))
                     (= op 'typed-set-nth)
                     (let [[type value index] args
                           item-type (second type)
@@ -2843,11 +2863,11 @@
                                       'typed-set-nth-ref)]
                       (concat (i32-const (descriptor-id type)) (emit* value env)
                               (emit* index env)
-                              [0x10 (get intrinsic-indices intrinsic)]))
+                              [::call (get intrinsic-indices intrinsic)]))
                     (= op 'typed-map-count)
                     (let [[type value] args]
                       (concat (i32-const (descriptor-id type)) (emit* value env)
-                              [0x10 (get intrinsic-indices 'typed-count)]))
+                              [::call (get intrinsic-indices 'typed-count)]))
                     (contains? '#{typed-map-contains typed-map-get typed-map-dissoc} op)
                     (let [[type value key] args
                           key-type (second type)
@@ -2857,13 +2877,13 @@
                                    typed-map-dissoc "typed-map-dissoc-")
                           intrinsic (symbol (str prefix (if (= key-type :i64) "i64" "ref")))
                           code (concat (i32-const (descriptor-id type)) (emit* value env)
-                                       (emit* key env) [0x10 (get intrinsic-indices intrinsic)])]
+                                       (emit* key env) [::call (get intrinsic-indices intrinsic)])]
                       (if (= op 'typed-map-contains) (emit-bool code) code))
                     (= op 'typed-map-entry-at)
                     (let [[type value index] args]
                       (concat (i32-const (descriptor-id type)) (emit* value env)
                               (emit* index env)
-                              [0x10 (get intrinsic-indices 'typed-map-entry-at)]))
+                              [::call (get intrinsic-indices 'typed-map-entry-at)]))
                     (= op 'typed-map-assoc)
                     (let [[type value key item] args
                           key-code (if (= (second type) :i64) "i" "r")
@@ -2871,31 +2891,31 @@
                           intrinsic (symbol (str "typed-map-assoc-" key-code item-code))]
                       (concat (i32-const (descriptor-id type)) (emit* value env)
                               (emit* key env) (emit* item env)
-                              [0x10 (get intrinsic-indices intrinsic)]))
+                              [::call (get intrinsic-indices intrinsic)]))
                     (= op 'xml-path-count)
                     (concat (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'xml-path-count)])
+                            [::call (get intrinsic-indices 'xml-path-count)])
                     (= op 'xml-name-count)
                     (concat (emit* (first args) env) (emit* (second args) env)
-                            [0x10 (get intrinsic-indices 'xml-name-count)])
+                            [::call (get intrinsic-indices 'xml-name-count)])
                     (= op 'xml-name-text)
                     (concat (emit* (nth args 0) env) (emit* (nth args 1) env)
                             (emit* (nth args 2) env)
-                            [0x10 (get intrinsic-indices 'xml-name-text)])
+                            [::call (get intrinsic-indices 'xml-name-text)])
                     (= op 'xml-path-text)
                     (concat (emit* (nth args 0) env) (emit* (nth args 1) env)
                             (emit* (nth args 2) env)
-                            [0x10 (get intrinsic-indices 'xml-path-text)])
+                            [::call (get intrinsic-indices 'xml-path-text)])
                     (= op 'xml-path-attr)
                     (concat (emit* (nth args 0) env) (emit* (nth args 1) env)
                             (emit* (nth args 2) env) (emit* (nth args 3) env)
-                            [0x10 (get intrinsic-indices 'xml-path-attr)])
+                            [::call (get intrinsic-indices 'xml-path-attr)])
                     (= op 'decimal-f64-parse)
                     (concat (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'decimal-f64-parse)])
+                            [::call (get intrinsic-indices 'decimal-f64-parse)])
                     (= op 'decimal-f64x3-parse)
                     (concat (emit* (first args) env)
-                            [0x10 (get intrinsic-indices 'decimal-f64x3-parse)])
+                            [::call (get intrinsic-indices 'decimal-f64x3-parse)])
                     (and structured-loop? (= op (:name function)))
                     (concat (mapcat #(emit* % env 0) args)
                             (mapcat (fn [index] [::local-set index])
@@ -2904,7 +2924,7 @@
 
                     :else
                     (if-let [function-index (get function-indices op)]
-                      (concat (mapcat #(emit* % env) args) [0x10 function-index])
+                      (concat (mapcat #(emit* % env) args) [::call function-index])
                       (throw (ex-info "typed Wasm operation is not qualified"
                                       {:phase :wasm-typed-lowering
                                        :operation op :form form}))))))))]
@@ -2928,7 +2948,7 @@
                                 nil
                                 (reference-type? type)
                                 (concat (i32-const (descriptor-id type)) [::local-get index]
-                                        [0x10 (get intrinsic-indices 'typed-assert-ref)
+                                        [::call (get intrinsic-indices 'typed-assert-ref)
                                          ::local-set index])))
                             (map-indexed vector (:param-types function))))
             body-code (doall (emit* (:body function) env 0))
@@ -2940,7 +2960,7 @@
             body-code (doall
                        (if (reference-type? (:result function))
                          (concat (i32-const (descriptor-id (:result function))) body-code
-                                 [0x10 (get intrinsic-indices 'typed-assert-ref)])
+                                 [::call (get intrinsic-indices 'typed-assert-ref)])
                          body-code))
             declarations (if (empty? @locals) [0]
                            (concat (uleb (count @locals))
