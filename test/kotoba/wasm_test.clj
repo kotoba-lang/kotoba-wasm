@@ -1029,3 +1029,51 @@
         (is (not (zero? (:exit malformed-list-still-traps)))))
       (finally
         (Files/deleteIfExists path)))))
+
+(deftest call-operands-above-127-are-uleb-encoded
+  ;; A Wasm index operand is ULEB128, so a value above 127 needs two bytes.
+  ;; Writing it as one byte does not truncate -- the high bit is the LEB
+  ;; CONTINUATION bit, so the decoder swallows the next instruction byte and
+  ;; reports an index that never existed.
+  ;;
+  ;; Measured 2026-08-29 on a real 183-function module: a call to function 182
+  ;; (0xB6) emitted as one byte decoded as `function index #694 is out of
+  ;; bounds`, and 694 is 54 + (5 << 7) -- 0xB6's low seven bits plus the 0x05
+  ;; opcode that followed it. `emit` reported success; the defect only
+  ;; appeared at instantiation.
+  ;;
+  ;; Nothing caught it because a program has to reach 129 functions before any
+  ;; index needs a second byte, and no fixture here had. This one does, on
+  ;; purpose, and calls the LAST function so the highest index is the one
+  ;; exercised.
+  (let [helper-count 200
+        helpers (mapv (fn [i]
+                        {:name (symbol (str "helper-" i)) :params [] :result :i64
+                         :effects #{} :body 1})
+                      (range helper-count))
+        ;; Every helper is called, so none is dropped as unreachable and the
+        ;; call to the highest index is really emitted.
+        body (reduce (fn [acc i] (list '+ (list (symbol (str "helper-" i))) acc))
+                     0
+                     (reverse (range helper-count)))
+        kir {:format :kotoba.kir/v3
+             :exports ['main]
+             :effects #{}
+             :functions (conj helpers {:name 'main :params [] :result :i64
+                                       :effects #{} :body body})}
+        _ (is (> (count (:functions kir)) 128)
+              "the fixture must exceed 128 functions or it does not exercise the case")
+        bytes (wasm/emit kir :wasm32-kotoba-v1 {:fuel 1000000})
+        path (Files/createTempFile "kotoba-wasm-uleb-call-" ".wasm"
+                                   (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            ran (shell/sh "wasmtime" "run" "--invoke" "main" (str path))]
+        (is (zero? (:exit validated))
+            (str "a module with more than 128 functions must validate: " (:err validated)))
+        (is (= (str helper-count) (str/trim (:out ran)))
+            (str "every one of the " helper-count " calls must reach its own function: "
+                 (:err ran))))
+      (finally
+        (Files/deleteIfExists path)))))
