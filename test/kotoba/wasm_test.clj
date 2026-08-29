@@ -1077,3 +1077,50 @@
                  (:err ran))))
       (finally
         (Files/deleteIfExists path)))))
+
+;; A structural position inside a heterogeneous value arrives as a KIR i64
+;; literal. That is a Long here and a JavaScript BigInt under cljs/nbb, and
+;; `nth` accepts neither interchangeably: the JVM cast is a no-op, so a
+;; JVM-only assertion cannot see the difference that made the whole nbb Wasm
+;; path answer `:kotoba/internal-error` for `hetero-vector-at`. What a JVM
+;; test CAN pin is that the conversion exists, is used, and refuses a
+;; malformed position with a named phase instead of letting a host-level
+;; `nth` error escape as an internal compiler error.
+(deftest structural-positions-are-converted-to-a-host-index
+  (is (= 2 (typed/host-index 2 '(hetero-vector-at [:vector [:i64 :i64 :i64]] v 2))))
+  (is (= :f64 (typed/hetero-item-type [:vector [:i64 :f64]] 1 'form)))
+  (is (= :i64 (typed/hetero-item-type [:vector [:i64 :f64]] 0 'form))))
+
+(deftest a-malformed-structural-position-is-refused-by-name
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"non-negative integer literal"
+       (typed/host-index 'runtime-value 'form)))
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"non-negative integer literal"
+       (typed/host-index -1 'form)))
+  (is (= :wasm-typed-lowering
+         (:phase (try (typed/host-index nil 'form)
+                      (catch clojure.lang.ExceptionInfo error (ex-data error))))))
+  (is (thrown-with-msg?
+       clojure.lang.ExceptionInfo
+       #"out of range"
+       (typed/hetero-item-type [:vector [:i64 :f64]] 2 'form))))
+
+(deftest heterogeneous-positions-emit-valid-wasm
+  ;; Both structural-position operations, at a non-zero position, through the
+  ;; whole emitter rather than through the helper alone.
+  (let [type '[:vector [:i64 :i64 :i64]]
+        kir {:format :kotoba.kir/v4
+             :entry 'main
+             :exports ['main]
+             :effects #{}
+             :functions
+             [{:name 'main :params [] :result :i64 :param-types []
+               :body (list 'hetero-vector-at type
+                           (list 'hetero-vector-assoc type
+                                 (list 'hetero-vector-new type 1 2 3)
+                                 2 7)
+                           2)}]}]
+    (is (bytes? (wasm/emit kir :wasm32-kotoba-v1 {:fuel 512})))))

@@ -159,6 +159,42 @@
   ;; emitter's job at function boundaries, not a different local type.
   (case type :i64 0x7e :f32 0x7d :f64 0x7c :bool 0x7e 0x6f))
 
+(defn host-index
+  "A STRUCTURAL position inside a heterogeneous value, as a host integer.
+
+  KIR carries such a position as an ordinary i64 literal, and an i64 literal
+  is a `Long` on the JVM but a JavaScript `BigInt` under cljs/nbb. `nth`
+  accepts only a host number, so every emitter site that uses the position to
+  select a MEMBER TYPE has to convert first; on the JVM the conversion is a
+  no-op, which is why a JVM-only test cannot see the difference. The KIR
+  reference interpreter performs the same conversion for the same operations
+  (`kotoba.kir`'s `hetero-vector-at`/`hetero-vector-assoc`); this is that
+  conversion for the Wasm backend.
+
+  Refuses anything that is not an integer literal with a named phase rather
+  than letting `nth` raise a host-level error the CLI can only report as an
+  internal compiler error."
+  [index form]
+  (let [n #?(:clj (when (integer? index) (long index))
+             :cljs (cond (i64/bigint-value? index) (js/Number index)
+                         (integer? index) index
+                         :else nil))]
+    (when-not (nat-int? n)
+      (throw (ex-info "heterogeneous position must be a non-negative integer literal"
+                      {:phase :wasm-typed-lowering :index index :form form})))
+    n))
+
+(defn hetero-item-type
+  "The member type at a structural position of `[:vector [t0 t1 ...]]`."
+  [type index form]
+  (let [items (second type)
+        position (host-index index form)]
+    (when-not (< position (count items))
+      (throw (ex-info "heterogeneous position is out of range"
+                      {:phase :wasm-typed-lowering :index position
+                       :arity (count items) :form form})))
+    (nth items position)))
+
 (declare infer-type)
 
 (defn infer-type [form env signatures]
@@ -300,7 +336,8 @@
         (= op 'typed-map-entry-at)
         [:option [:vector [(second (first args)) (nth (first args) 2)]]]
         (= op 'typed-set-nth) (second (first args))
-        (= op 'hetero-vector-at) (nth (second (first args)) (nth args 2))
+        (= op 'hetero-vector-at)
+        (hetero-item-type (first args) (nth args 2) form)
         (= op 'record-get)
         (let [[type _ field] args]
           (second (some #(when (= field (first %)) %) (nth type 2))))
