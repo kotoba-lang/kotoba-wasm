@@ -2801,9 +2801,13 @@
                               [0x0b]))
                     (= op 'variant-match) (emit-match (first args) (second args) (nth args 2) env)
                     (= op 'hetero-vector-at)
+                    ;; The position is a KIR i64 literal -- a Long on the JVM
+                    ;; and a JS BigInt under cljs -- so it has to become a host
+                    ;; integer before it can select a member type or an operand.
                     (let [[type value index] args
-                          item-type (nth (second type) index)]
-                      (emit-get type value index item-type env))
+                          position (typed/host-index index form)
+                          item-type (typed/hetero-item-type type index form)]
+                      (emit-get type value position item-type env))
                     (= op 'record-get)
                     (let [[type value field] args
                           index (first (keep-indexed #(when (= field (first %2)) %1) (nth type 2)))
@@ -2828,8 +2832,10 @@
                               (emit-get type {:wasm-local value-local} 0 payload-type env)
                               [0x05] (emit* fallback env) [0x0b]))
                     (= op 'hetero-vector-assoc)
-                    (let [[type value index replacement] args]
-                      (emit-assoc type value index replacement (nth (second type) index) env))
+                    (let [[type value index replacement] args
+                          position (typed/host-index index form)]
+                      (emit-assoc type value position replacement
+                                  (typed/hetero-item-type type index form) env))
                     (= op 'record-assoc)
                     (let [[type value field replacement] args
                           index (first (keep-indexed #(when (= field (first %2)) %1) (nth type 2)))
