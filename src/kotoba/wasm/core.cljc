@@ -46,6 +46,15 @@
                       (and (= n' (js/BigInt -1)) (not (zero? (bit-and b 0x40)))))]
          (if done (conj out b) (recur n' (conj out (bit-or b 0x80))))))))
 
+(defn- capability-key
+  "A capability id as a map key both hosts can hash. On ClojureScript an i64 is
+  a BigInt, and ClojureScript cannot hash one at all -- it tries to stamp a
+  `closure_uid` property on it and throws -- so `[:capability cap-id]` failed
+  as a key the moment a guest declared a capability. Decimal text is stable
+  across both hosts, and this key only ever pairs an import with its lookup."
+  [id]
+  [:capability (str id)])
+
 (def ^:private operand-opcodes
   "Instructions whose operand is a ULEB128 index rather than a raw byte.
 
@@ -200,7 +209,7 @@
 
         (= op 'typed-cap-call)
         (let [[cap-id request-type result-type request] args
-              typed-import (get intrinsic-indices [:capability cap-id])
+              typed-import (get intrinsic-indices (capability-key cap-id))
               request-bytes (emit-expr request env ctx)]
           (cond
             typed-import
@@ -502,7 +511,7 @@
           'component-option-record-capability-project-f64 :f64
           'component-option-record-capability-project-bool :bool}
          op)
-        typed-import (get intrinsic-indices [:capability cap-id])
+        typed-import (get intrinsic-indices (capability-key cap-id))
         realloc-index (get intrinsic-indices :component-realloc)
         _ (when-not (and (vector? request-values) (seq request-values))
             (throw
@@ -1657,7 +1666,7 @@
                      result-size payload-offset requested-result-alignment
                      item-kind & item-validation-args] args
                     result-alignment (or requested-result-alignment alignment)
-                    typed-import (get intrinsic-indices [:capability cap-id])
+                    typed-import (get intrinsic-indices (capability-key cap-id))
                     realloc-index (get intrinsic-indices :component-realloc)
                     _ (when-not typed-import
                         (throw
@@ -1743,7 +1752,7 @@
                      result-size payload-offset requested-result-alignment
                      item-kind & item-validation-args] args
                     result-alignment (or requested-result-alignment alignment)
-                    typed-import (get intrinsic-indices [:capability cap-id])
+                    typed-import (get intrinsic-indices (capability-key cap-id))
                     realloc-index (get intrinsic-indices :component-realloc)
                     _ (when-not (contains? #{0 1} request-disc)
                         (throw
@@ -2042,7 +2051,7 @@
                               (range n) args))
                     (= op 'typed-cap-call)
                     (let [[cap-id request-type result-type request] args
-                          typed-import (get intrinsic-indices [:capability cap-id])
+                          typed-import (get intrinsic-indices (capability-key cap-id))
                           request-bytes (emit* request env)]
                       (cond
                         typed-import
@@ -3569,7 +3578,7 @@
         imports (vec (concat typed-imports
                       (if (seq capability-imports)
                         (mapv (fn [{:keys [id module field type]}]
-                                [[:capability id] module field type])
+                                [(capability-key id) module field type])
                               capability-imports)
                         (when has-generic-externref-typed-cap?
                           [['typed-cap-call "kotoba:typed" "cap-call"
