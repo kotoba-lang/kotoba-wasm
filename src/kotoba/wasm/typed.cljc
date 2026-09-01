@@ -314,7 +314,7 @@
         (= op 'document-f64-value) [:option :f64]
         (contains? '#{vector-f64-get vector-f64-at} op) :f64
         (contains? '#{vector-f64-drop vector-f64-assoc vector-f64-conj} op) :vector-f64
-        (contains? '#{vector-drop vector-assoc vector-conj} op) :vector-i64
+        (contains? '#{vector-drop vector-assoc vector-assoc! vector-conj} op) :vector-i64
         (= op 'variant-new) (first args)
         (contains? '#{option-some-of option-none-of result-ok-of result-err-of
                       typed-list-new hetero-vector-new typed-set-new typed-map-new record-new} op) (first args)

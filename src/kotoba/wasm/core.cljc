@@ -2512,6 +2512,20 @@
                             (emit* (first args) env) (emit* (second args) env)
                             (emit* (nth args 2) env)
                             [::call (get intrinsic-indices 'typed-vector-assoc-i64)])
+                    ;; The same operation, lowered to a store instead of a copy.
+                    ;;
+                    ;; `vector-assoc-i64` in the host does `[...checked]` and
+                    ;; freezes the result: one element write costs a copy of
+                    ;; the whole vector. The bang says the frontend proved the
+                    ;; incoming handle is dead afterwards, so writing through
+                    ;; it is indistinguishable from copying -- and the KIR
+                    ;; interpreter treats the two as one operation precisely so
+                    ;; that stays true.
+                    (= op 'vector-assoc!)
+                    (concat (i32-const (descriptor-id :vector-i64))
+                            (emit* (first args) env) (emit* (second args) env)
+                            (emit* (nth args 2) env)
+                            [::call (get intrinsic-indices 'typed-vector-assoc-in-place-i64)])
                     (= op 'vector-conj)
                     (concat (i32-const (descriptor-id :vector-i64))
                             (emit* (first args) env) (emit* (second args) env)
@@ -3497,6 +3511,7 @@
                          ['typed-vector-drop "kotoba:typed" "vector-drop" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                          ['typed-vector-at-i64 "kotoba:typed" "vector-at-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x7e]]
                          ['typed-vector-assoc-i64 "kotoba:typed" "vector-assoc-i64" [0x60 4 0x7f 0x6f 0x7e 0x7e 1 0x6f]]
+                         ['typed-vector-assoc-in-place-i64 "kotoba:typed" "vector-assoc-in-place-i64" [0x60 4 0x7f 0x6f 0x7e 0x7e 1 0x6f]]
                          ['typed-vector-conj-i64 "kotoba:typed" "vector-conj-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                          ['typed-vector-at-f64 "kotoba:typed" "vector-at-f64" [0x60 3 0x7f 0x6f 0x7e 1 0x7c]]
                          ['typed-vector-assoc-f64 "kotoba:typed" "vector-assoc-f64" [0x60 4 0x7f 0x6f 0x7e 0x7c 1 0x6f]]
