@@ -14,6 +14,7 @@
 ;; required is not being run.
 (ns run-tests
   (:require [cljs.test :as t]
+            [kotoba.wasm-bounded-map-test]
             [kotoba.wasm-capability-key-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
@@ -22,4 +23,5 @@
   (when (pos? (+ (or (:fail m) 0) (or (:error m) 0)))
     (set! (.-exitCode js/process) 1)))
 
-(t/run-tests 'kotoba.wasm-capability-key-test)
+(t/run-tests 'kotoba.wasm-bounded-map-test
+             'kotoba.wasm-capability-key-test)

@@ -3371,7 +3371,12 @@
   ([kir target {:keys [component-standard32? fuel memory-pages capability-imports
                        core-param-types component-canonical-scalars?]
                 :as opts}]
-  (let [fuel-initial (fuel-budget! fuel)
+  (let [;; The bounded `:map` value type becomes the canonical typed map
+        ;; before anything here sees the module -- signatures, descriptor
+        ;; table, literal table, inference and emission all read one map
+        ;; vocabulary. See `kotoba.wasm.typed/lower-bounded-maps`.
+        kir (typed/lower-bounded-maps kir)
+        fuel-initial (fuel-budget! fuel)
         memory-maximum (component-memory-budget! memory-pages)
         functions (:functions kir)
         typed? (= :kotoba.kir/v4 (:format kir))
