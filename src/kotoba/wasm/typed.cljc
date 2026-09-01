@@ -39,13 +39,138 @@
 
 (declare literal-table reference-type?)
 
+;; --- the bounded `:map` value type ------------------------------------------
+;;
+;; KIR carries two map vocabularies. `typed-map-*` is the canonical parametric
+;; map: it names its own `[:map K V]` descriptor at every use, and this backend
+;; has emitted it since the typed value ABI landed. `map-new` / `map-get` /
+;; `map-assoc` are the BOUNDED map -- what a bare `{:k 1}` literal desugars to
+;; -- and its descriptor is not written down anywhere, because the frontend
+;; fixes it: `kotoba.compiler.frontend` checks every key as `:keyword` and
+;; every value as `:i64`, so the bounded map IS `[:map :keyword :i64]` and
+;; nothing else can be spelled.
+;;
+;; That descriptor was the whole of the gap. Before this, a bounded map
+;; refused in two different places with two different messages, and closing
+;; either one alone left the other standing:
+;;
+;;   (get {:value 9} :value)          -> emit*'s fallthrough in
+;;                                       kotoba.wasm.core, "typed Wasm
+;;                                       operation is not qualified": `map-get`
+;;                                       is neither an emitter case nor a
+;;                                       function in the module.
+;;   (let [m {:value 9}] ...)         -> `infer-type` below, "unsupported
+;;                                       typed Wasm expression": a `let` needs
+;;                                       the STATIC type of its init, and
+;;                                       `map-new` had no inference case.
+;;
+;; Which message a program got depended on whether it bound the map to a
+;; local, not on anything about maps. Rewriting the three operations onto the
+;; canonical vocabulary here -- before inference, emission, the descriptor
+;; table, the literal table and the custom section see the module -- closes
+;; both, and it does so by reusing machinery those two tables already carry
+;; rather than by adding a third map representation to this backend.
+(def bounded-map-descriptor
+  "The bounded `:map` value type, written as the descriptor it already is."
+  [:map :keyword :i64])
+
+(def bounded-map-option-descriptor
+  "What `typed-map-get` answers for a `[:map :keyword :i64]`."
+  [:option :i64])
+
+(def bounded-map-wasm-entry-limit
+  "Entries a bounded map may hold once it is a typed map on this backend.
+
+  The typed value runtime rejects a 32nd entry (`typed map entry budget
+  exceeded`), while `kotoba.kir.value/map-entry-limit` admits 128 for the
+  bounded map on the KIR oracle. The two numbers are real and they differ, so
+  a literal over the smaller one is refused HERE, by name, at compile time --
+  rather than emitted into a module that traps when the entry is added. A
+  computed `map-assoc` can still cross it at runtime; that one the runtime
+  owns."
+  31)
+
+(defn- bounded-map-call [op args form]
+  (case op
+    map-new
+    (do (when (> (quot (count args) 2) bounded-map-wasm-entry-limit)
+          (throw (ex-info "bounded map exceeds the typed map entry budget"
+                          {:phase :wasm-typed-lowering
+                           :entries (quot (count args) 2)
+                           :limit bounded-map-wasm-entry-limit
+                           :form form})))
+        (apply list 'typed-map-new bounded-map-descriptor args))
+    ;; `map-get`'s default is evaluated only when the key is absent, which is
+    ;; exactly `option-value-of`'s else branch -- so the laziness the KIR
+    ;; oracle gives it survives the rewrite instead of being restored by hand.
+    map-get
+    (let [[value key fallback] args]
+      (list 'option-value-of bounded-map-option-descriptor
+            (list 'typed-map-get bounded-map-descriptor value key)
+            fallback))
+    map-assoc
+    (reduce (fn [current [key item]]
+              (list 'typed-map-assoc bounded-map-descriptor current key item))
+            (first args)
+            (partition 2 (rest args)))))
+
+(defn- lower-bounded-map-form [form]
+  (cond
+    (and (seq? form) (seq form))
+    (let [op (first form)
+          args (mapv lower-bounded-map-form (rest form))]
+      (if (contains? '#{map-new map-get map-assoc} op)
+        (bounded-map-call op args form)
+        (apply list op args)))
+    ;; Descriptor vectors survive this unchanged (they hold only keywords and
+    ;; nested descriptors), and `let` binding vectors need walking, so both go
+    ;; through the same branch.
+    (vector? form) (mapv lower-bounded-map-form form)
+    :else form))
+
+(defn- lower-bounded-map-type [type]
+  (if (= :map type) bounded-map-descriptor type))
+
+(defn lower-bounded-maps
+  "Rewrite the bounded map onto the canonical typed map, everywhere in KIR.
+
+  Idempotent: a module with no bounded map is returned structurally equal to
+  its input, so applying this twice -- `requires-host-runtime?` and `emit` each
+  apply it, because each is reached independently -- is the same as applying
+  it once."
+  [kir]
+  (-> kir
+      (update :functions
+              (fn [functions]
+                (mapv (fn [function]
+                        (cond-> (update function :body lower-bounded-map-form)
+                          (:param-types function)
+                          (update :param-types #(mapv lower-bounded-map-type %))
+                          (:result function)
+                          (update :result lower-bounded-map-type)))
+                      functions)))
+      (cond->
+       (:signature kir)
+       (update :signature
+               (fn [signature]
+                 (cond-> signature
+                   (:params signature) (update :params #(mapv lower-bounded-map-type %))
+                   (:result signature) (update :result lower-bounded-map-type)))))))
+
+
 (defn requires-host-runtime?
   ([kir] (requires-host-runtime? kir {}))
   ([kir {:keys [native-bool?]}]
    ;; i64, f32, and f64 are native Wasm scalars. Canonical Component adapters
    ;; may additionally opt into bool=i32; ordinary KIR v4 deliberately keeps
    ;; bool as a sealed externref.
-   (let [native-types (cond-> #{:i64 :f32 :f64} native-bool? (conj :bool))
+   ;; The bounded map is rewritten before the question is asked. An empty
+   ;; `(map-new)` carries no keyword literal and no descriptor of its own, so
+   ;; asking the raw KIR would answer "no host value" for a module that, once
+   ;; emitted, imports `kotoba:typed` -- the module would then declare no
+   ;; reference-types feature for imports it actually has.
+   (let [kir (lower-bounded-maps kir)
+         native-types (cond-> #{:i64 :f32 :f64} native-bool? (conj :bool))
          signature-types (mapcat (fn [{:keys [param-types result]}]
                                    (conj (vec param-types) result))
                                  (:functions kir))
