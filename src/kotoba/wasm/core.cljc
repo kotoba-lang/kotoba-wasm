@@ -2521,6 +2521,16 @@
                     ;; it is indistinguishable from copying -- and the KIR
                     ;; interpreter treats the two as one operation precisely so
                     ;; that stays true.
+                    ;; `(vector-alloc n)` -- n zeros, built host-side.
+                    ;;
+                    ;; Not expressible as `vector-new`: that is variadic, and a
+                    ;; million-slot struct of arrays would need a million
+                    ;; arguments, which the literal limit refuses long before
+                    ;; the item limit does.
+                    (= op 'vector-alloc)
+                    (concat (i32-const (descriptor-id :vector-i64))
+                            (emit* (first args) env)
+                            [::call (get intrinsic-indices 'typed-vector-alloc-i64)])
                     (= op 'vector-assoc!)
                     (concat (i32-const (descriptor-id :vector-i64))
                             (emit* (first args) env) (emit* (second args) env)
@@ -3512,6 +3522,7 @@
                          ['typed-vector-at-i64 "kotoba:typed" "vector-at-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x7e]]
                          ['typed-vector-assoc-i64 "kotoba:typed" "vector-assoc-i64" [0x60 4 0x7f 0x6f 0x7e 0x7e 1 0x6f]]
                          ['typed-vector-assoc-in-place-i64 "kotoba:typed" "vector-assoc-in-place-i64" [0x60 4 0x7f 0x6f 0x7e 0x7e 1 0x6f]]
+                         ['typed-vector-alloc-i64 "kotoba:typed" "vector-alloc-i64" [0x60 2 0x7f 0x7e 1 0x6f]]
                          ['typed-vector-conj-i64 "kotoba:typed" "vector-conj-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                          ['typed-vector-at-f64 "kotoba:typed" "vector-at-f64" [0x60 3 0x7f 0x6f 0x7e 1 0x7c]]
                          ['typed-vector-assoc-f64 "kotoba:typed" "vector-assoc-f64" [0x60 4 0x7f 0x6f 0x7e 0x7c 1 0x6f]]
