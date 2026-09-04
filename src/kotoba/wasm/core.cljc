@@ -2429,6 +2429,9 @@
                     (= op 'string-fold-case)
                     (concat (i32-const (descriptor-id :string)) (emit* (first args) env)
                             [::call (get intrinsic-indices 'typed-string-fold-case)])
+                    (= op 'string-upper)
+                    (concat (i32-const (descriptor-id :string)) (emit* (first args) env)
+                            [::call (get intrinsic-indices 'typed-string-upper)])
                     (= op 'keyword-name)
                     (concat (i32-const (descriptor-id :keyword)) (emit* (first args) env)
                             [::call (get intrinsic-indices 'typed-keyword-name)])
@@ -3441,6 +3444,7 @@
         has-string-split-count? (uses-operation? functions '#{string-split-count})
         has-string-code-point-at? (uses-operation? functions '#{string-code-point-at})
         has-string-fold-case? (uses-operation? functions '#{string-fold-case})
+        has-string-upper? (uses-operation? functions '#{string-upper})
         has-keyword-name? (uses-operation? functions '#{keyword-name})
         has-disjoint-set? (uses-operation? functions
                                             '#{disjoint-set-i64-new disjoint-set-i64-count
@@ -3514,6 +3518,9 @@
                              [0x60 3 0x7f 0x6f 0x7e 1 0x7f]]])
                          (when has-string-fold-case?
                            [['typed-string-fold-case "kotoba:typed" "string-fold-case"
+                             [0x60 2 0x7f 0x6f 1 0x6f]]])
+                         (when has-string-upper?
+                           [['typed-string-upper "kotoba:typed" "string-upper"
                              [0x60 2 0x7f 0x6f 1 0x6f]]])
                          (when has-keyword-name?
                            [['typed-keyword-name "kotoba:typed" "keyword-name"
