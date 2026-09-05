@@ -108,9 +108,9 @@
 
 (defn- wasm-runtime [target]
   (case target
-    :wasm32-browser-kotoba-v1 :kotoba-browser-host-v1
-    :wasm32-wasi-kotoba-v1 :kotoba-wasi-host-v1
-    :kotoba-capability-host-v1))
+    :wasm32-browser-kotoba-v1 :kototama-browser-host-v1
+    :wasm32-wasi-kotoba-v1 :kototama-wasi-host-v1
+    :kototama-capability-host-v1))
 
 (defn- identity-text [value]
   (if-let [ns (namespace value)] (str ns "/" (name value)) (name value)))
