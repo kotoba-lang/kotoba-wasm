@@ -370,7 +370,8 @@
            component-option-record-capability-project-bool :bool}
          op)
         (contains? '#{+ - * quot bit-xor bit-and bit-or bit-not
-                      cap-call pair pair-first pair-second
+                             min max
+                             cap-call pair pair-first pair-second
                       i32-wrap u32-wrap i32-wrapping-add i32-wrapping-mul i32-xor
                       i32-shift-left i32-shift-right u32-shift-right xorshift32
                       i64-shift-left i64-shift-right u64-shift-right
@@ -423,7 +424,7 @@
         (contains? '#{document-null document-bool document-i64 document-f64
                       document-string document-keyword document-symbol document-vector document-list document-set document-map
                       document-vector-assoc document-vector-conj document-vector-drop
-                      document-vector-remove document-map-entry-at
+                      document-vector-remove document-vector-sort document-map-entry-at
                       document-assoc document-dissoc document-merge} op) :document
         (contains? '#{document-get document-vector-at document-list-at document-map-entry-at} op) [:option :document]
         (= op 'document-sha256) :string
