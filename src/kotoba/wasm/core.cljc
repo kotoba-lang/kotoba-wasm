@@ -238,6 +238,19 @@
             (concat (emit-expr (first args) env ctx)
                     (mapcat #(concat (emit-expr % env ctx) [opcode]) (rest args)))))
 
+        (contains? '#{min max} op)
+        ;; i64 min(a,b) = (a<b)?a:b; max = (a>b)?a:b. wasm has no integer
+        ;; min/max, so lower through i64.lt (0x55) / i64.gt (0x57) + select
+        ;; (0x1b): [a b a b<cmp>] -> select pops bool then b then a, giving
+        ;; a if cmp else b.
+        (let [cmp (if (= op 'min) 0x55 0x57)
+              [a b] args]
+          (concat (emit-expr a env ctx)
+                  (emit-expr b env ctx)
+                  (emit-expr a env ctx)
+                  (emit-expr b env ctx)
+                  [cmp 0x1b]))
+
         (= op 'i32-wrap)
         (concat (emit-expr (first args) env ctx) [0xa7 0xac])
 
@@ -2638,6 +2651,10 @@
                                          'document-vector-conj 'typed-document-vector-conj
                                          'document-vector-drop 'typed-document-vector-drop
                                          'document-vector-remove 'typed-document-vector-remove} op))])
+                    (= op 'document-vector-sort)
+                    (concat (i32-const (descriptor-id :document))
+                            (emit* (first args) env)
+                            [::call (get intrinsic-indices 'typed-document-vector-sort)])
                     (= op 'document-contains)
                     (emit-bool
                      (concat (i32-const (descriptor-id :document))
@@ -3453,7 +3470,7 @@
                                        '#{document-null document-bool document-i64 document-f64
                                           document-string document-keyword document-symbol document-vector document-list document-set document-map
                                           document-count document-kind document-vector-at document-list-at document-map-entry-at document-vector-assoc
-                                          document-vector-conj document-vector-drop document-vector-remove
+                                                                                   document-vector-conj document-vector-drop document-vector-remove document-vector-sort
                                           document-equal? document-set-contains? document-sha256 document-print document-read
                                           document-edn-print document-edn-read document-contains document-get document-assoc
                                           document-dissoc document-merge document-string-value
@@ -3585,6 +3602,7 @@
                             ['typed-document-vector-conj "kotoba:typed" "document-vector-conj" [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]
                             ['typed-document-vector-drop "kotoba:typed" "document-vector-drop" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                             ['typed-document-vector-remove "kotoba:typed" "document-vector-remove" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
+                           ['typed-document-vector-sort "kotoba:typed" "document-vector-sort" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-contains "kotoba:typed" "document-contains" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]
                             ['typed-document-set-contains "kotoba:typed" "document-set-contains" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]
                             ['typed-document-get "kotoba:typed" "document-get" [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]
