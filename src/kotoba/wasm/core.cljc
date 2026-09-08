@@ -240,10 +240,12 @@
 
         (contains? '#{min max} op)
         ;; i64 min(a,b) = (a<b)?a:b; max = (a>b)?a:b. wasm has no integer
-        ;; min/max, so lower through i64.lt (0x55) / i64.gt (0x57) + select
+        ;; min/max, so lower through i64.lt_s (0x53) / i64.gt_s (0x55) + select
         ;; (0x1b): [a b a b<cmp>] -> select pops bool then b then a, giving
-        ;; a if cmp else b.
-        (let [cmp (if (= op 'min) 0x55 0x57)
+        ;; a if cmp else b. NOTE: 0x55 is i64.gt_s and 0x57 is i64.le_s - the
+        ;; previous swap made min emit max-semantics and vice versa (measured
+        ;; 2026-09-08: through the swapped emitter min(3,7)=7, max(3,7)=3).
+        (let [cmp (if (= op 'min) 0x53 0x55)
               [a b] args]
           (concat (emit-expr a env ctx)
                   (emit-expr b env ctx)
