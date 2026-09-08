@@ -4,7 +4,7 @@
   kotoba:typed/string-upper entry. Mirrors the emit-then-inspect pattern of
   the bytes-values test (wasm-tools validate + print)."
   (:require [clojure.java.shell :as shell]
-            [clojure.string :as str]
+            [kotoba.lang.text :as str]
             [clojure.test :refer [deftest is]]
             [kotoba.wasm.core :as wasm])
   (:import [java.nio.file Files]
