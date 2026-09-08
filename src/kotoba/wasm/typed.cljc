@@ -461,7 +461,10 @@
         (= op 'typed-map-get) [:option (nth (first args) 2)]
         (= op 'typed-map-entry-at)
         [:option [:vector [(second (first args)) (nth (first args) 2)]]]
-        (= op 'typed-set-nth) (second (first args))
+        ;; `typed-list-nth` is the list accessor sema has rewritten `nth` to
+        ;; since 2026-09-03; its result type is the item type, exactly as
+        ;; `typed-set-nth`'s is.
+        (contains? '#{typed-set-nth typed-list-nth} op) (second (first args))
         (= op 'hetero-vector-at)
         (hetero-item-type (first args) (nth args 2) form)
         (= op 'record-get)
