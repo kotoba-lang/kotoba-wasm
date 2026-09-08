@@ -1,7 +1,7 @@
 (ns kotoba.wasm-test
   (:require [clojure.java.shell :as shell]
             [clojure.string :as str]
-            [clojure.test :refer [deftest is]]
+            [clojure.test :refer [deftest is testing]]
             [kotoba.wasm.core :as wasm]
             [kotoba.wasm.typed :as typed]
             [kotoba.wasm.canonical-abi :as canonical]
@@ -453,6 +453,106 @@
         (is (zero? (:exit validated)) (:err validated)))
       (finally
         (Files/deleteIfExists path)))))
+
+
+;; ---------------------------------------------------------------------------
+;; typed-list-nth -- the ACCESSOR, added 2026-09-08.
+;;
+;; The constructor above has been here since the list descriptor landed and
+;; `vector-count` walks the carrier, so a `[:list T]` could be built and
+;; counted. Nothing read an element back: `typed-list-nth` fell through the
+;; typed-operation `cond` to its `:else` and was refused `typed Wasm operation
+;; is not qualified` -- for the whole module, whether the function was reached
+;; or not. kotoba-sema has typed and rewritten it (`nth` on a list) since
+;; 2026-09-03.
+;;
+;; The two intrinsics are imported CONDITIONALLY. Every host that already runs
+;; a typed module supplies the unconditional import block; adding to that block
+;; would break each of them at instantiation for modules that never index a
+;; list. `a-module-that-does-not-index-a-list-imports-neither` below is the
+;; assertion that keeps that true.
+(defn- list-nth-kir [item-type & {:keys [items] :or {items [4 5 6]}}]
+  (let [descriptor [:list item-type]]
+    {:format :kotoba.kir/v4
+     :exports ['at]
+     :schemas {}
+     :effects #{}
+     :functions
+     [{:name 'at :params ['index] :param-types [:i64] :result item-type :effects #{}
+       :body (list 'typed-list-nth descriptor
+                   (apply list 'typed-list-new descriptor items) 'index)}]}))
+
+(defn- emitted-wat [bytes prefix]
+  (let [path (Files/createTempFile prefix ".wasm" (make-array FileAttribute 0))]
+    (try
+      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (let [validated (shell/sh "wasm-tools" "validate" (str path))
+            printed (shell/sh "wasm-tools" "print" (str path))]
+        {:validate validated :wat (:out printed)})
+      (finally (Files/deleteIfExists path)))))
+
+(defn- imported-index
+  "The function index wasm-tools gives an import, read out of the printed
+  module: `(import \"kotoba:typed\" \"list-nth-i64\" (func (;47;) (type 47)))`.
+  Reading the index is what lets the test check WHICH intrinsic the body calls
+  -- both are imported together, so their presence alone says nothing about
+  the dispatch, and a test that only looked for the name would pass with the
+  arms swapped."
+  [wat name]
+  (some-> (re-find (re-pattern (str "\\(import \"kotoba:typed\" \"" name
+                                    "\" \\(func \\(;(\\d+);\\)"))
+                   wat)
+          second))
+
+(deftest canonical-lists-index-through-list-nth-intrinsics
+  (testing "a reference item type CALLS list-nth-ref"
+    (let [{:keys [validate wat]} (emitted-wat (wasm/emit (list-nth-kir :string :items ["a" "bb"])
+                                                         :wasm32-wasi-kotoba-v1)
+                                              "kotoba-wasm-list-nth-ref-")
+          ref-index (imported-index wat "list-nth-ref")
+          i64-index (imported-index wat "list-nth-i64")]
+      (is (zero? (:exit validate)) (:err validate))
+      (is (some? ref-index))
+      (is (some? i64-index) "both are imported; only the CALL distinguishes them")
+      (is (str/includes? wat (str "call " ref-index)))
+      (is (not (str/includes? wat (str "call " i64-index))))))
+  (testing "an i64 item type CALLS list-nth-i64"
+    (let [{:keys [validate wat]} (emitted-wat (wasm/emit (list-nth-kir :i64)
+                                                         :wasm32-wasi-kotoba-v1)
+                                              "kotoba-wasm-list-nth-i64-")
+          ref-index (imported-index wat "list-nth-ref")
+          i64-index (imported-index wat "list-nth-i64")]
+      (is (zero? (:exit validate)) (:err validate))
+      (is (some? i64-index))
+      (is (str/includes? wat (str "call " i64-index)))
+      (is (not (str/includes? wat (str "call " ref-index)))))))
+
+(deftest a-module-that-does-not-index-a-list-imports-neither-intrinsic
+  ;; The whole point of the conditional import: an existing host answers the
+  ;; unconditional block and nothing else, and must keep instantiating every
+  ;; module it could instantiate before.
+  (let [kir {:format :kotoba.kir/v4 :exports ['count-items] :schemas {} :effects #{}
+             :functions
+             [{:name 'count-items :params [] :param-types [] :result :i64 :effects #{}
+               :body (list 'vector-count (list 'typed-list-new [:list :i64] 4 5 6))}]}
+        {:keys [validate wat]} (emitted-wat (wasm/emit kir :wasm32-wasi-kotoba-v1)
+                                            "kotoba-wasm-list-no-nth-")]
+    (is (zero? (:exit validate)) (:err validate))
+    (is (not (str/includes? wat "list-nth")))))
+
+(deftest an-item-type-with-no-matching-intrinsic-is-refused-not-mis-typed
+  ;; `:f64`, `:f32` and `:bool` lower to f64/f32/i64 WORDS, not to externref,
+  ;; so neither intrinsic's result type matches. Measured 2026-09-08: emitting
+  ;; the ref call anyway produced a module wasm-tools and V8 both reject --
+  ;; "type error in fallthru[0] (expected f64, got externref)" -- a defect that
+  ;; survives the compiler and appears only at instantiation. This refuses at
+  ;; lowering time instead, with the item type named.
+  (doseq [item-type [:f64 :f32 :bool]]
+    (is (thrown-with-msg?
+         clojure.lang.ExceptionInfo #"typed list nth has no intrinsic"
+         (wasm/emit (list-nth-kir item-type :items (if (= item-type :bool) [true false] [1.5 2.5]))
+                    :wasm32-wasi-kotoba-v1))
+        (str item-type " must be refused, not emitted as a ref call"))))
 
 (deftest canonical-bool-validation-exclusions-are-function-scoped
   (let [kir {:format :kotoba.kir/v4

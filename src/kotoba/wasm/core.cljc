@@ -2925,6 +2925,36 @@
                       (concat (i32-const (descriptor-id type)) (emit* value env)
                               (emit* index env)
                               [::call (get intrinsic-indices intrinsic)]))
+                    ;; The list accessor. Same shape as `typed-set-nth`: the
+                    ;; descriptor id, the carrier, the index, and an intrinsic
+                    ;; chosen by whether the item is an i64 or a reference.
+                    ;; Until 2026-09-08 this arm did not exist and a module
+                    ;; that indexed a `[:list T]` -- reached or not -- was
+                    ;; refused `typed Wasm operation is not qualified`.
+                    ;; Two intrinsics, chosen by the WASM type the item lowers
+                    ;; to: `i64` for an i64 item, `externref` for a reference
+                    ;; item. `:f64`, `:f32` and `:bool` are neither -- they
+                    ;; lower to f64/f32/i64 words -- so there is no intrinsic
+                    ;; whose result type matches and this REFUSES rather than
+                    ;; emitting a call whose result type is wrong. Measured
+                    ;; 2026-09-08: without the refusal, `[:list :f64]` compiled
+                    ;; and `WebAssembly.compile` then rejected the module with
+                    ;; "type error in fallthru[0] (expected f64, got
+                    ;; externref)" -- a defect that survives the compiler and
+                    ;; only appears at instantiation.
+                    (= op 'typed-list-nth)
+                    (let [[type value index] args
+                          item-type (second type)
+                          intrinsic (cond (= item-type :i64) 'typed-list-nth-i64
+                                          (reference-type? item-type) 'typed-list-nth-ref
+                                          :else nil)]
+                      (when-not intrinsic
+                        (throw (ex-info "typed list nth has no intrinsic for this item type"
+                                        {:phase :wasm-typed-lowering
+                                         :operation op :item-type item-type :form form})))
+                      (concat (i32-const (descriptor-id type)) (emit* value env)
+                              (emit* index env)
+                              [::call (get intrinsic-indices intrinsic)]))
                     (= op 'typed-map-count)
                     (let [[type value] args]
                       (concat (i32-const (descriptor-id type)) (emit* value env)
@@ -3465,6 +3495,12 @@
         has-string-fold-case? (uses-operation? functions '#{string-fold-case})
         has-string-upper? (uses-operation? functions '#{string-upper})
         has-keyword-name? (uses-operation? functions '#{keyword-name})
+        ;; Imported ONLY when the module indexes a list. Every host that
+        ;; already runs a typed module supplies the unconditional block above;
+        ;; adding to it would break each of them at instantiation for modules
+        ;; that never index a list. A module that DOES index one needs a host
+        ;; that answers `list-nth-*`, and says so by importing it.
+        has-typed-list-nth? (uses-operation? functions '#{typed-list-nth})
         has-disjoint-set? (uses-operation? functions
                                             '#{disjoint-set-i64-new disjoint-set-i64-count
                                                disjoint-set-i64-union})
@@ -3575,6 +3611,9 @@
                          ['typed-map-assoc-rr "kotoba:typed" "map-assoc-rr" [0x60 4 0x7f 0x6f 0x6f 0x6f 1 0x6f]]
                          ['typed-map-dissoc-i64 "kotoba:typed" "map-dissoc-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
                          ['typed-map-dissoc-ref "kotoba:typed" "map-dissoc-ref" [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]]
+                         (when has-typed-list-nth?
+                           [['typed-list-nth-i64 "kotoba:typed" "list-nth-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x7e]]
+                            ['typed-list-nth-ref "kotoba:typed" "list-nth-ref" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]])
                          (when has-string-index?
                            [['typed-string-index-new "kotoba:typed" "string-index-new" [0x60 1 0x7f 1 0x6f]]
                             ['typed-string-index-contains "kotoba:typed" "string-index-contains" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]
