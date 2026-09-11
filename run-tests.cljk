@@ -15,7 +15,8 @@
 (ns run-tests
   (:require [cljs.test :as t]
             [kotoba.wasm-bounded-map-test]
-            [kotoba.wasm-capability-key-test]))
+            [kotoba.wasm-capability-key-test]
+            [kotoba.wasm-tools-portable-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
   (println (str "\nnbb: " (:test m) " tests, " (:pass m) " passed, "
@@ -24,4 +25,5 @@
     (set! (.-exitCode js/process) 1)))
 
 (t/run-tests 'kotoba.wasm-bounded-map-test
-             'kotoba.wasm-capability-key-test)
+             'kotoba.wasm-capability-key-test
+             'kotoba.wasm-tools-portable-test)
