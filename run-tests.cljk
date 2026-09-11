@@ -1,4 +1,4 @@
-;; nbb --classpath "src:test:$(clojure -Spath -M:test)" run-tests.cljs
+;; nbb --classpath "src:test:$(clojure -Spath -M:test)" run-tests.cljk
 ;;
 ;; The portable side of this suite. `kotoba.wasm.core` is `.cljc` and the amu
 ;; CLI's JVM-free path emits through it, but every test in `test/` was `.clj`,

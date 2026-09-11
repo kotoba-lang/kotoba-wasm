@@ -42,7 +42,7 @@ item type named. `typed-set-nth` has the same hole; this ADR does not close it.
 
 ## Evidence
 
-In `test/kotoba/wasm_test.clj`:
+In `test/kotoba/wasm_test.cljk`:
 
 - `canonical-lists-index-through-list-nth-intrinsics` reads the import's
   function index out of `wasm-tools print` and asserts which one the body

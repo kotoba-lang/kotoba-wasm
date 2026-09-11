@@ -22,7 +22,7 @@ jobs:
       # which is exactly how the first CI run on this branch looked. They had
       # only ever passed because the developer machine happened to have both on
       # PATH; nothing in the repo installed or checked for them.
-      # wasm-tools is version-pinned in src/kotoba/wasm/tools.clj
+      # wasm-tools is version-pinned in src/kotoba/wasm/tools.cljk
       # (assert-version!), so pin it here to the same 1.243.0.
       - name: Install pinned wasm-tools and wasmtime
         run: |
