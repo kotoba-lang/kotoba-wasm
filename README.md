@@ -69,5 +69,5 @@ memory and bump pointer are never exported. See ADR 0045.
 ## Test
 
 ```bash
-clojure -M:test
+kbb -M:test
 ```

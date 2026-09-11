@@ -21,7 +21,7 @@
   "Resolve the Wasmtime CLI the same way `scripts/wasmtime_tool.cljs` installs
    it: the pinned, SHA-verified binary under `.tools/wasmtime/wasmtime` that
    `npm run test-wasmtime` downloads. The CI `test` job runs that step before
-   `clojure -M:test`, so the binary is present there even though it is not on
+   `kbb -M:test`, so the binary is present there even though it is not on
    PATH -- invoking a bare `\"wasmtime\"` PATH lookup is what left this test
    erroring in CI. Fall back to a PATH lookup for local machines that have
    Wasmtime installed directly."
