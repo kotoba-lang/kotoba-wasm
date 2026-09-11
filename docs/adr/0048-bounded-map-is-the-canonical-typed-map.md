@@ -121,7 +121,7 @@ Suites, JVM and nbb, this repository:
 
 | | unmodified `3eb9bfe` | with this change |
 |---|---|---|
-| `clojure -M:test` | 121 tests / 527 assertions / 0 failures | 130 / 542 / 0 |
+| `kbb -M:test` | 121 tests / 527 assertions / 0 failures | 130 / 542 / 0 |
 | `run-tests.cljk` (nbb) | 2 tests / 2 assertions / 0 failures | 11 / 17 / 0 |
 
 Break/unbreak, run on nbb over the same nine new tests:
