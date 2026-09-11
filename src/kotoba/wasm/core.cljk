@@ -1,4 +1,5 @@
 (ns kotoba.wasm.core
+  {:kotoba/export [compatibility-section-name component-arena-base component-arena-capacity component-memory-pages default-fuel emit emit-component-core emit-expr max-fuel]}
   ;; See `kotoba.kir`'s ns form for why the whole `:require` clause
   ;; (not just an item inside it) is behind the reader-conditional.
   #?(:clj (:require [kotoba.wasm.typed :as typed]

@@ -1,5 +1,6 @@
 (ns kotoba.wasm.tools
   "Pinned official tooling used only for Component Model encoding."
+  {:kotoba/export [assert-version! parse-wat run-command! version]}
   (:import [java.nio.charset StandardCharsets]
            [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]))
