@@ -7,6 +7,7 @@
   boundary needs the same encoding and there must be exactly one of it. The
   names are re-exported below so every caller of this namespace is unchanged;
   what moved is where they are defined, not what they mean."
+  {:kotoba/export [abi-version boolean-result-ops bounded-map-descriptor bounded-map-option-descriptor bounded-map-wasm-entry-limit bytes-abi-version capability-contracts compact-graph-abi-version custom-section-name descriptor-indices descriptor-table descriptor? document-abi-version encode-descriptor hetero-item-type host-index infer-type keyword-text list-abi-version literal-indices literal-table lower-bounded-maps metadata-bytes primitive-tags reference-type? requires-host-runtime? scalar-adt-aliases schema-abi-version symbol-abi-version text-bytes uleb utf8 wasm-type]}
   #?(:clj  (:require [kotoba.kir.descriptor :as descriptor])
      :cljs (:require [kotoba.kir.descriptor :as descriptor]
                      [kotoba.kir.cljs-i64 :as i64])))
