@@ -13,7 +13,7 @@
   `amu compile --jvm-free --target wasm32-browser` reported an internal
   compiler error. Nothing in this repository had executed a `:cljs` branch --
   every test here was `.clj`, which is the same reason kotoba-kir grew its own
-  `run-tests.cljs` on 2026-08-24.
+  `run-tests.cljk` on 2026-08-24.
 
   The capability call below carries `:string` and not `:i64` ON PURPOSE. A
   scalar module takes the i64 value ABI and never reaches the import key: the
