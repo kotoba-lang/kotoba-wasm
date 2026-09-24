@@ -1,5 +1,5 @@
 (ns kotoba.wasm.core
-  {:kotoba/export [compatibility-section-name component-arena-base component-arena-capacity component-memory-pages default-fuel emit emit-component-core emit-expr max-fuel]}
+  {:kotoba/export [compatibility-section-name component-arena-base component-arena-capacity component-memory-pages component-vector-item-budget default-fuel emit emit-component-core emit-expr max-fuel]}
   ;; See `kotoba.kir`'s ns form for why the whole `:require` clause
   ;; (not just an item inside it) is behind the reader-conditional.
   #?(:clj (:require [kotoba.wasm.typed :as typed]
@@ -3473,6 +3473,19 @@
 
 (def ^:private wasm-page-bytes 65536)
 
+(def component-vector-item-budget
+  "Items of the largest `:vector-i64` a component's linear memory is sized for.
+
+  kotoba-lang `lang/limits.edn` `:profile/wasm :cells :vector-items` -- a
+  per-HOST budget, NOT the language's vector bound. That one is
+  `kotoba.kir.value/vector-item-limit`, 2^24 since 2026-09-16; ADR 0077's
+  prose below still calls this number the language bound because on the day
+  it was written the two were equal (16384). Sizing linear memory from 2^24
+  would declare 257 pages for every component, so the budget stays 16384 and
+  is named as what it is (adr-2609242100 P1). amu `value_bounds_agreement_test`
+  compares it against the table."
+  16384)
+
 (def component-memory-pages
   "Pages of linear memory a component module declares.
 
@@ -3486,7 +3499,7 @@
 
   Derived here rather than written as a literal so it cannot drift from the
   item limit it exists to cover."
-  (+ 1 (* 2 (quot (+ (* 16384 8) (dec wasm-page-bytes)) wasm-page-bytes))))
+  (+ 1 (* 2 (quot (+ (* component-vector-item-budget 8) (dec wasm-page-bytes)) wasm-page-bytes))))
 
 (defn- component-memory-budget! [pages]
   (let [pages (or pages 16)]
