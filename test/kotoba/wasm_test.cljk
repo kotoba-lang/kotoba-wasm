@@ -1,13 +1,11 @@
 (ns kotoba.wasm-test
-  (:require [clojure.java.shell :as shell]
+  (:require [kotoba.io :as kio] [kotoba.process :as shell]
             [kotoba.lang.text :as str]
             [kotoba.test :refer [deftest is testing]]
             [kotoba.wasm.core :as wasm]
             [kotoba.wasm.typed :as typed]
             [kotoba.wasm.canonical-abi :as canonical]
-            [kotoba.wasm.tools])
-  (:import [java.nio.file Files]
-           [java.nio.file.attribute FileAttribute]))
+            [kotoba.wasm.tools]))
 
 ;; Load gate: the split must not break namespace resolution. Each extracted
 ;; namespace must load standalone from this repo's own dependency closure.
@@ -48,10 +46,9 @@
               {:name 'countdown :params ['remaining] :result :i64 :effects #{}
                :body '(if (= remaining 0) 0 (countdown (- remaining 1)))}]}
         bytes (wasm/emit kir :wasm32-kotoba-v1)
-        path (Files/createTempFile "kotoba-wasm-structured-loop-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-structured-loop-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             printed (shell/sh "wasm-tools" "print" (str path))
             deep-loop (shell/sh "wasmtime" "run" "--invoke" "scalar"
@@ -65,7 +62,7 @@
         (is (not (zero? (:exit fuel-trap)))
             "ordinary recursion must retain the fixed fuel boundary"))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest typed-loop-helpers-also-use-structured-wasm
   (let [kir {:format :kotoba.kir/v4
@@ -82,17 +79,16 @@
                         total
                         (__kotoba_loop_2 (+ index 1) (+ total 42) iterations))}]}
         bytes (wasm/emit kir :wasm32-kotoba-v1)
-        path (Files/createTempFile "kotoba-wasm-typed-structured-loop-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-typed-structured-loop-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             deep-loop (shell/sh "wasmtime" "run" "--invoke" "scalar"
                                 (str path) "100000")]
         (is (zero? (:exit validated)) (:err validated))
         (is (= "4200000" (str/trim (:out deep-loop))) (:err deep-loop)))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest typed-u32-let-chain-keeps-intermediates-in-i32-locals
   (let [kir {:format :kotoba.kir/v4
@@ -107,11 +103,9 @@
                             x2 (u32-wrap (i32-xor x1 (u32-shift-right x1 17)))
                             x3 (u32-wrap (i32-xor x2 (i32-shift-left x2 5)))]
                         x3)}]}
-        path (Files/createTempFile "kotoba-wasm-u32-local-chain-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-u32-local-chain-" ".wasm")]
     (try
-      (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
-                   (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes (wasm/emit kir :wasm32-kotoba-v1))
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             printed (shell/sh "wasm-tools" "print" (str path))
             result (shell/sh "wasmtime" "run" "--invoke" "mix-step"
@@ -123,7 +117,7 @@
             "the u32 chain should extend only at its i64 result boundary")
         (is (= "723471715" (str/trim (:out result))) (:err result)))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest bounded-vector-literal-reads-and-counts-use-checked-wasm-locals
   (let [kir {:format :kotoba.kir/v4
@@ -152,11 +146,9 @@
                :result :i64 :effects #{}
                :body '(let [items (vector-new 3 5 8 13 21 34 55 89)]
                         (+ (vector-count items) (vector-at items index)))}]}
-        path (Files/createTempFile "kotoba-wasm-scalar-vector-at-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-scalar-vector-at-" ".wasm")]
     (try
-      (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
-                   (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes (wasm/emit kir :wasm32-kotoba-v1))
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             printed (shell/sh "wasm-tools" "print" (str path))
             first-item (shell/sh "wasmtime" "run" "--invoke" "pick"
@@ -193,7 +185,7 @@
         (is (not (zero? (:exit empty-vector)))
             "reading an empty literal vector must trap"))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest escaping-and-wide-vector-literals-use-the-bounded-bulk-host-path
   (let [wide-vector (apply list 'vector-new (range 33))
@@ -208,11 +200,9 @@
               {:name 'wide-read :params [] :param-types []
                :result :i64 :effects #{}
                :body (list 'vector-at wide-vector 0)}]}
-        path (Files/createTempFile "kotoba-wasm-host-vector-fallback-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-host-vector-fallback-" ".wasm")]
     (try
-      (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
-                   (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes (wasm/emit kir :wasm32-kotoba-v1))
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             printed (shell/sh "wasm-tools" "print" (str path))]
         (is (zero? (:exit validated)) (:err validated))
@@ -238,7 +228,7 @@
         (is (str/includes? (:out printed) "(import \"kotoba:typed\" \"vector-at-i64\"")
             "the wide-vector fallback must retain checked host indexing"))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest structured-loop-recur-replaces-parameters-simultaneously
   (let [untyped-kir
@@ -270,11 +260,10 @@
                     (+ (* left 10) right)
                     (__kotoba_loop_8 right left (- remaining 1)))}]}]
     (doseq [[label kir] [["untyped" untyped-kir] ["typed" typed-kir]]]
-      (let [path (Files/createTempFile (str "kotoba-wasm-parallel-recur-" label "-")
-                                       ".wasm" (make-array FileAttribute 0))]
+      (let [path (kio/temp-file (str "kotoba-wasm-parallel-recur-" label "-")
+                                       ".wasm")]
         (try
-          (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
-                       (make-array java.nio.file.OpenOption 0))
+          (kio/write-bytes path ^bytes (wasm/emit kir :wasm32-kotoba-v1))
           (let [validated (shell/sh "wasm-tools" "validate" (str path))
                 result (shell/sh "wasmtime" "run" "--invoke" "rotate"
                                  (str path) "100001")]
@@ -282,7 +271,7 @@
             (is (= "21" (str/trim (:out result)))
                 (str label ": " (:err result))))
           (finally
-            (Files/deleteIfExists path)))))))
+            (kio/delete-if-exists path)))))))
 
 (deftest malformed-loop-helper-arity-is-not-structured
   (let [kir {:format :kotoba.kir/v3
@@ -294,11 +283,9 @@
                :body '(if (= remaining 0)
                         total
                         (__kotoba_loop_10 (- remaining 1)))}]}
-        path (Files/createTempFile "kotoba-wasm-loop-arity-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-loop-arity-" ".wasm")]
     (try
-      (Files/write path ^bytes (wasm/emit kir :wasm32-kotoba-v1)
-                   (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes (wasm/emit kir :wasm32-kotoba-v1))
       (let [printed (shell/sh "wasm-tools" "print" (str path))
             validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit printed)) (:err printed))
@@ -307,7 +294,7 @@
         (is (not (zero? (:exit validated)))
             "historical call lowering leaves malformed KIR fail-closed at validation"))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest unsupported-helper-self-call-shapes-fall-back-to-valid-call-lowering
   (let [kir {:format :kotoba.kir/v3
@@ -323,10 +310,9 @@
                         0
                         (+ 1 (__kotoba_loop_9 (- remaining 1))))}]}
         bytes (wasm/emit kir :wasm32-kotoba-v1)
-        path (Files/createTempFile "kotoba-wasm-loop-fallback-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-loop-fallback-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             printed (shell/sh "wasm-tools" "print" (str path))
             result (shell/sh "wasmtime" "run" "--invoke" "__kotoba_loop_9"
@@ -336,7 +322,7 @@
             "unsupported self-call context must not be rewritten to a branch")
         (is (= "10" (str/trim (:out result))) (:err result)))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest document-map-infers-only-key-argument-types
   (let [kir {:format :kotoba.kir/v4
@@ -361,14 +347,13 @@
              [{:name 'main :params [] :param-types [] :result :i64 :effects #{}
                :body '(pair-first (pair 42 7))}]}
         bytes (wasm/emit kir :wasm32-browser-kotoba-v1)
-        path (Files/createTempFile "kotoba-wasm-typed-pair-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-typed-pair-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest bounded-list-descriptors-use-the-versioned-recursive-metadata-tag
   (let [descriptor [:list [:ref :demo/item]]
@@ -397,18 +382,17 @@
               {:name 'discard :params [] :param-types [] :result :i64
                :effects #{} :body '(do (bytes-empty) 1)}]}
         bytes (wasm/emit kir :wasm32-browser-kotoba-v1)
-        path (Files/createTempFile "kotoba-wasm-bytes-empty-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-bytes-empty-" ".wasm")]
     (is (= [21] (typed/encode-descriptor :bytes)))
     (is (= typed/bytes-abi-version (first (typed/metadata-bytes kir))))
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             printed (shell/sh "wasm-tools" "print" (str path))]
         (is (zero? (:exit validated)) (:err validated))
         (is (str/includes? (:out printed) "(import \"kotoba:typed\" \"bytes-empty\"")))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest vector-count-uses-the-actual-canonical-list-descriptor
   (let [descriptor [:list :string]
@@ -424,15 +408,14 @@
                :effects #{}
                :body '(vector-count items)}]}
         bytes (wasm/emit kir :wasm32-wasi-kotoba-v1)
-        path (Files/createTempFile
-              "kotoba-wasm-generic-list-count-" ".wasm"
-              (make-array FileAttribute 0))]
+        path (kio/temp-file
+              "kotoba-wasm-generic-list-count-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest canonical-list-construction-uses-the-list-descriptor
   (let [descriptor [:list :i64]
@@ -444,15 +427,14 @@
              [{:name 'count-items :params [] :param-types [] :result :i64 :effects #{}
                :body (list 'vector-count (list 'typed-list-new descriptor 4 5 6))}]}
         bytes (wasm/emit kir :wasm32-wasi-kotoba-v1)
-        path (Files/createTempFile
-              "kotoba-wasm-generic-list-new-" ".wasm"
-              (make-array FileAttribute 0))]
+        path (kio/temp-file
+              "kotoba-wasm-generic-list-new-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 
 ;; ---------------------------------------------------------------------------
@@ -483,13 +465,13 @@
                    (apply list 'typed-list-new descriptor items) 'index)}]}))
 
 (defn- emitted-wat [bytes prefix]
-  (let [path (Files/createTempFile prefix ".wasm" (make-array FileAttribute 0))]
+  (let [path (kio/temp-file prefix ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             printed (shell/sh "wasm-tools" "print" (str path))]
         {:validate validated :wat (:out printed)})
-      (finally (Files/deleteIfExists path)))))
+      (finally (kio/delete-if-exists path)))))
 
 (defn- imported-index
   "The function index wasm-tools gives an import, read out of the printed
@@ -567,10 +549,9 @@
                kir :wasm32-wasi-kotoba-v1
                {:component-canonical-scalars? true
                 :component-unchecked-bool-params {'joined #{0}}})
-        path (Files/createTempFile "kotoba-wasm-function-bool-scope-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-function-bool-scope-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [joined (shell/sh "wasmtime" "run" "--invoke" "cm32p2||joined"
                              (str path) "2")
             ordinary (shell/sh "wasmtime" "run" "--invoke" "cm32p2||ordinary"
@@ -580,7 +561,7 @@
         (is (not (zero? (:exit ordinary)))
             "an exclusion for one function must not disable another function"))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest public-vector-descriptors-share-the-canonical-list-layout
   (doseq [[public item] [[:vector-i64 :i64]
@@ -650,17 +631,16 @@
                           :body '(typed-cap-call 7 :i64 :i64 0)}]}
         bytes (wasm/emit kir :wasm32-kotoba-v1)
         text (String. (byte-array (map unchecked-byte bytes)) "ISO-8859-1")
-        path (Files/createTempFile "kotoba-wasm-i64-cap-call-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-i64-cap-call-" ".wasm")]
     (is (str/includes? text (str "kotoba:cap" (char 4) "call")))
     (is (not (str/includes? text (str "kotoba:typed" (char 8) "cap-call")))
         "i64/i64 must not take the externref cap-call import")
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest canonical-scalar-capability-requires-an-explicit-named-binding
   (let [kir {:format :kotoba.kir/v4
@@ -712,11 +692,10 @@
                 :type [0x60 4 0x7f 0x7f 0x7f 0x7f 0]}]}
         bytes (wasm/emit-component-core
                kir :wasm32-wasi-kotoba-v1 opts)
-        path (Files/createTempFile
-              "kotoba-wasm-component-option-list-capability-" ".wasm"
-              (make-array FileAttribute 0))]
+        path (kio/temp-file
+              "kotoba-wasm-component-option-list-capability-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (is (thrown-with-msg?
@@ -839,7 +818,7 @@
                       invalid-plan))
               :wasm32-wasi-kotoba-v1 opts))))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest component-result-list-capability-count-has-a-flat-named-import
   (let [kir {:format :kotoba.kir/v4
@@ -865,11 +844,10 @@
                 :type [0x60 4 0x7f 0x7f 0x7f 0x7f 0]}]}
         bytes (wasm/emit-component-core
                kir :wasm32-wasi-kotoba-v1 opts)
-        path (Files/createTempFile
-              "kotoba-wasm-component-result-list-capability-" ".wasm"
-              (make-array FileAttribute 0))]
+        path (kio/temp-file
+              "kotoba-wasm-component-result-list-capability-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (is (thrown-with-msg?
@@ -892,7 +870,7 @@
             kir :wasm32-wasi-kotoba-v1
             (dissoc opts :capability-imports))))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest component-option-record-capability-projects-a-validated-field
   (let [kir {:format :kotoba.kir/v4
@@ -917,11 +895,10 @@
                 :type [0x60 5 0x7f 0x7e 0x7f 0x7d 0x7f 0]}]}
         bytes (wasm/emit-component-core
                kir :wasm32-wasi-kotoba-v1 opts)
-        path (Files/createTempFile
-              "kotoba-wasm-component-record-capability-" ".wasm"
-              (make-array FileAttribute 0))]
+        path (kio/temp-file
+              "kotoba-wasm-component-record-capability-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (is (thrown-with-msg?
@@ -938,7 +915,7 @@
                         24 8 8 [24] 8))
             :wasm32-wasi-kotoba-v1 opts)))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest component-string-length-validates-the-selected-flat-range
   (let [kir {:format :kotoba.kir/v4
@@ -958,11 +935,10 @@
                {:component-canonical-scalars? true
                 :component-unchecked-bool-params {'length #{0 1}}
                 :core-param-types {'length [0x7f 0x7f]}})
-        path (Files/createTempFile
-              "kotoba-wasm-component-string-length-" ".wasm"
-              (make-array FileAttribute 0))]
+        path (kio/temp-file
+              "kotoba-wasm-component-string-length-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [valid (shell/sh "wasmtime" "run" "--invoke" "cm32p2||length"
                             (str path) "0" "16")
             over-bound (shell/sh "wasmtime" "run" "--invoke" "cm32p2||length"
@@ -978,7 +954,7 @@
         (is (not (zero? (:exit wrapped))))
         (is (not (zero? (:exit out-of-memory)))))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest component-list-count-validates-the-selected-flat-range
   (let [kir {:format :kotoba.kir/v4
@@ -996,11 +972,10 @@
                {:component-canonical-scalars? true
                 :component-unchecked-bool-params {'count-items #{0 1}}
                 :core-param-types {'count-items [0x7f 0x7f]}})
-        path (Files/createTempFile
-              "kotoba-wasm-component-list-count-" ".wasm"
-              (make-array FileAttribute 0))]
+        path (kio/temp-file
+              "kotoba-wasm-component-list-count-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [valid (shell/sh "wasmtime" "run" "--invoke" "cm32p2||count-items"
                             (str path) "8" "16")
             over-bound (shell/sh "wasmtime" "run" "--invoke" "cm32p2||count-items"
@@ -1019,7 +994,7 @@
         (is (not (zero? (:exit wrapped))))
         (is (not (zero? (:exit out-of-memory)))))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest component-list-at-validates-before-loading-i64-or-f64
   (let [kir {:format :kotoba.kir/v4
@@ -1045,11 +1020,10 @@
                 :core-param-types
                 {'at-i64 [0x7f 0x7f 0x7e]
                  'at-f64 [0x7f 0x7f 0x7e]}})
-        path (Files/createTempFile
-              "kotoba-wasm-component-list-at-" ".wasm"
-              (make-array FileAttribute 0))]
+        path (kio/temp-file
+              "kotoba-wasm-component-list-at-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [i64-valid (shell/sh "wasmtime" "run" "--invoke" "cm32p2||at-i64"
                                 (str path) "8" "2" "1")
             f64-valid (shell/sh "wasmtime" "run" "--invoke" "cm32p2||at-f64"
@@ -1076,7 +1050,7 @@
         (doseq [run [negative-index equal-index over-bound unaligned wrapped]]
           (is (not (zero? (:exit run))))))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest component-list-get-validates-the-list-before-index-fallback
   (let [kir {:format :kotoba.kir/v4
@@ -1104,11 +1078,10 @@
                 :core-param-types
                 {'get-i64 [0x7f 0x7f 0x7e 0x7e]
                  'get-f64 [0x7f 0x7f 0x7e 0x7c]}})
-        path (Files/createTempFile
-              "kotoba-wasm-component-list-get-" ".wasm"
-              (make-array FileAttribute 0))]
+        path (kio/temp-file
+              "kotoba-wasm-component-list-get-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [present (shell/sh "wasmtime" "run" "--invoke" "cm32p2||get-i64"
                               (str path) "8" "2" "1" "77")
             negative (shell/sh "wasmtime" "run" "--invoke" "cm32p2||get-i64"
@@ -1128,7 +1101,7 @@
         (is (= "3.5" (str/trim (:out f64-fallback))))
         (is (not (zero? (:exit malformed-list-still-traps)))))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 (deftest call-operands-above-127-are-uleb-encoded
   ;; A Wasm index operand is ULEB128, so a value above 127 needs two bytes.
@@ -1164,10 +1137,9 @@
         _ (is (> (count (:functions kir)) 128)
               "the fixture must exceed 128 functions or it does not exercise the case")
         bytes (wasm/emit kir :wasm32-kotoba-v1 {:fuel 1000000})
-        path (Files/createTempFile "kotoba-wasm-uleb-call-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-uleb-call-" ".wasm")]
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             ran (shell/sh "wasmtime" "run" "--invoke" "main" (str path))]
         (is (zero? (:exit validated))
@@ -1176,7 +1148,7 @@
             (str "every one of the " helper-count " calls must reach its own function: "
                  (:err ran))))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))
 
 ;; A structural position inside a heterogeneous value arrives as a KIR i64
 ;; literal. That is a Long here and a JavaScript BigInt under cljs/nbb, and

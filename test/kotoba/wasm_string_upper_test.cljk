@@ -3,12 +3,10 @@
   valid typed wasm binary whose import table carries exactly one
   kotoba:typed/string-upper entry. Mirrors the emit-then-inspect pattern of
   the bytes-values test (wasm-tools validate + print)."
-  (:require [clojure.java.shell :as shell]
+  (:require [kotoba.io :as kio] [kotoba.process :as shell]
             [kotoba.lang.text :as str]
             [kotoba.test :refer [deftest is]]
-            [kotoba.wasm.core :as wasm])
-  (:import [java.nio.file Files]
-           [java.nio.file.attribute FileAttribute]))
+            [kotoba.wasm.core :as wasm]))
 
 (deftest string-upper-lowers-to-the-typed-string-upper-import
   (let [kir {:format :kotoba.kir/v4
@@ -19,12 +17,11 @@
              [{:name 'up :params ['s] :param-types [:string]
                :result :string :effects #{} :body '(string-upper s)}]}
         bytes (wasm/emit kir :wasm32-browser-kotoba-v1)
-        path (Files/createTempFile "kotoba-wasm-string-upper-" ".wasm"
-                                   (make-array FileAttribute 0))]
+        path (kio/temp-file "kotoba-wasm-string-upper-" ".wasm")]
     (is (bytes? bytes))
     (is (pos? (count bytes)))
     (try
-      (Files/write path ^bytes bytes (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
             printed (shell/sh "wasm-tools" "print" (str path))]
         (is (zero? (:exit validated)) (:err validated))
@@ -34,4 +31,4 @@
         (is (= 1 (count (re-seq #"string-upper" (:out printed)))))
         (is (not (str/includes? (:out printed) "string-fold-case"))))
       (finally
-        (Files/deleteIfExists path)))))
+        (kio/delete-if-exists path)))))

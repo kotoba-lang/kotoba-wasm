@@ -8,14 +8,12 @@
   These tests run the emitted allocator, rather than inspecting it, because a
   byte-level port is exactly the kind of change that can look right and be
   wrong."
-  (:require [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.io :as kio] [kotoba.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]
             [kotoba.wasm.core :as wasm]
             [kotoba.kir.value :as value]
-            [kotoba.wasm.tools :as wasm-tools])
-  (:import [java.nio.file Files]
-           [java.nio.file.attribute FileAttribute]))
+            [kotoba.wasm.tools :as wasm-tools]))
 
 (def ^:private wasmtime-binary
   "Resolve the Wasmtime CLI the same way `scripts/wasmtime_tool.cljs` installs
@@ -39,15 +37,14 @@
 (defn- with-temp-module
   "Write the emitted core module to a temp file and hand the path to `f`."
   [f]
-  (let [dir (Files/createTempDirectory "kotoba-heap-" (make-array FileAttribute 0))
-        module (.resolve dir "core.wasm")]
+  (let [dir (kio/temp-dir "kotoba-heap-")
+        module (kio/file dir "core.wasm")]
     (try
-      (Files/write module ^bytes (component-core-bytes)
-                   (make-array java.nio.file.OpenOption 0))
+      (kio/write-bytes module ^bytes (component-core-bytes))
       (f (str module))
       (finally
-        (Files/deleteIfExists module)
-        (Files/deleteIfExists dir)))))
+        (kio/delete-if-exists module)
+        (kio/delete-if-exists dir)))))
 
 (deftest emitted-component-module-is-valid-wasm
   (testing "the module with a real memory and allocator still validates"
