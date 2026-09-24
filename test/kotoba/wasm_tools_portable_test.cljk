@@ -8,7 +8,7 @@
   If `wasm-tools` is not on PATH the spawning tests do not pass -- they
   report the refusal `assert-version!` gives, which is the answer a compile
   would get too."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotoba.wasm.tools :as wasm-tools]))
 
 (def ^:private version-pattern @#'wasm-tools/version-pattern)

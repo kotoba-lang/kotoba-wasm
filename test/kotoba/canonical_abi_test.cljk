@@ -1,5 +1,5 @@
 (ns kotoba.canonical-abi-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [kotoba.test :refer [deftest is]]
             [kotoba.wasm.canonical-abi :as canonical]
             [kotoba.kir.value :as value]))
 

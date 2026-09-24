@@ -1,5 +1,5 @@
 (ns kotoba.wasm-test
-  (:require [clojure.test :refer [deftest is]]
+  (:require [kotoba.test :refer [deftest is]]
             [kotoba.wasm.core]
             [kotoba.wasm.typed]
             [kotoba.wasm.canonical-abi]

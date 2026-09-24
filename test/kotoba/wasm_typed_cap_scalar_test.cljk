@@ -17,7 +17,7 @@
   against a stub `kotoba:typed` host written here -- enough to show which
   values cross each import and in which order; the real host semantics are
   amu's `runtime/browser-host.mjs`."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [kotoba.wasm.core :as wasm]
             [kotoba.wasm.tools :as wasm-tools]))
 

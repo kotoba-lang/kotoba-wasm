@@ -24,7 +24,7 @@
   amu 27d82d8: the first exited 70 with the first message, the second with
   the second, and `(match 5 0 100 5 200 :else 300)` -- no map anywhere --
   compiled and answered 200. The refusal was the map, not `match`."
-  (:require #?(:clj  [clojure.test :refer [deftest is testing]]
+  (:require #?(:clj  [kotoba.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [kotoba.wasm.core :as wasm]
             [kotoba.wasm.typed :as typed]))
