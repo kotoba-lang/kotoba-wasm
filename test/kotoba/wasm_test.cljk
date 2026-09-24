@@ -1,7 +1,7 @@
 (ns kotoba.wasm-test
   (:require [clojure.java.shell :as shell]
             [kotoba.lang.text :as str]
-            [clojure.test :refer [deftest is testing]]
+            [kotoba.test :refer [deftest is testing]]
             [kotoba.wasm.core :as wasm]
             [kotoba.wasm.typed :as typed]
             [kotoba.wasm.canonical-abi :as canonical]
