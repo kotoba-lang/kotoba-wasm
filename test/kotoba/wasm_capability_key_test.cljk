@@ -20,7 +20,7 @@
   first version of this test used `:i64`, passed with the defect still in
   place, and was only caught by putting the defect back. Do not simplify the
   types."
-  (:require #?(:clj  [clojure.test :refer [deftest is testing]]
+  (:require #?(:clj  [kotoba.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing] :include-macros true])
             [kotoba.wasm.core :as wasm]))
 

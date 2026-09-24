@@ -5,7 +5,7 @@
   the bytes-values test (wasm-tools validate + print)."
   (:require [clojure.java.shell :as shell]
             [kotoba.lang.text :as str]
-            [clojure.test :refer [deftest is]]
+            [kotoba.test :refer [deftest is]]
             [kotoba.wasm.core :as wasm])
   (:import [java.nio.file Files]
            [java.nio.file.attribute FileAttribute]))

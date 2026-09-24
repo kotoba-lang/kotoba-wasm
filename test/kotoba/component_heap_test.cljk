@@ -8,7 +8,7 @@
   These tests run the emitted allocator, rather than inspecting it, because a
   byte-level port is exactly the kind of change that can look right and be
   wrong."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [kotoba.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]
             [kotoba.wasm.core :as wasm]
