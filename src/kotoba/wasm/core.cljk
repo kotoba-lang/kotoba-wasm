@@ -2567,6 +2567,24 @@
                     (concat (i32-const (descriptor-id :bytes))
                             (emit* (first args) env) (emit* (second args) env)
                             [::call (get intrinsic-indices 'typed-bytes-concat)])
+                    ;; 2026-09-25 (superproject adr-2609242330): the bytes
+                    ;; constructor, its inverse and the string constructor.
+                    ;; Each passes the RESULT descriptor and the OPERAND's, so
+                    ;; the host checks both values against sealed descriptors
+                    ;; rather than by shape. The host's refusals carry the
+                    ;; reference trap names (bytes/*, utf8/*, string/too-large).
+                    (= op 'bytes-from-vector-i64)
+                    (concat (i32-const (descriptor-id :bytes)) (i32-const (descriptor-id :vector-i64))
+                            (emit* (first args) env)
+                            [::call (get intrinsic-indices 'typed-bytes-from-vector-i64)])
+                    (= op 'vector-i64-from-bytes)
+                    (concat (i32-const (descriptor-id :vector-i64)) (i32-const (descriptor-id :bytes))
+                            (emit* (first args) env)
+                            [::call (get intrinsic-indices 'typed-vector-i64-from-bytes)])
+                    (= op 'string-from-utf8)
+                    (concat (i32-const (descriptor-id :string)) (i32-const (descriptor-id :bytes))
+                            (emit* (first args) env)
+                            [::call (get intrinsic-indices 'typed-string-from-utf8)])
                     (= op 'vector-new)
                     (if (get intrinsic-indices 'typed-vector-from-memory-i64)
                       (emit-vector-i64-bulk args env)
@@ -3703,6 +3721,9 @@
         has-bytes-at? (uses-operation? functions '#{bytes-at})
         has-bytes-slice? (uses-operation? functions '#{bytes-slice})
         has-bytes-concat? (uses-operation? functions '#{bytes-concat})
+        has-bytes-from-vector-i64? (uses-operation? functions '#{bytes-from-vector-i64})
+        has-vector-i64-from-bytes? (uses-operation? functions '#{vector-i64-from-bytes})
+        has-string-from-utf8? (uses-operation? functions '#{string-from-utf8})
         has-string-index-of? (uses-operation? functions '#{string-index-of})
         has-bulk-vector? (and typed?
                               (uses-operation? (:functions runtime-kir)
@@ -3764,6 +3785,15 @@
                          (when has-bytes-concat?
                            [['typed-bytes-concat "kotoba:typed" "bytes-concat"
                              [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]])
+                         (when has-bytes-from-vector-i64?
+                           [['typed-bytes-from-vector-i64 "kotoba:typed" "bytes-from-vector-i64"
+                             [0x60 3 0x7f 0x7f 0x6f 1 0x6f]]])
+                         (when has-vector-i64-from-bytes?
+                           [['typed-vector-i64-from-bytes "kotoba:typed" "vector-i64-from-bytes"
+                             [0x60 3 0x7f 0x7f 0x6f 1 0x6f]]])
+                         (when has-string-from-utf8?
+                           [['typed-string-from-utf8 "kotoba:typed" "string-from-utf8"
+                             [0x60 3 0x7f 0x7f 0x6f 1 0x6f]]])
                          (when has-string-index-of?
                            [['typed-string-index-of "kotoba:typed" "string-index-of"
                              [0x60 3 0x7f 0x6f 0x6f 1 0x7e]]])
