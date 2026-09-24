@@ -917,11 +917,17 @@
         reference-type? (fn [type]
                           (and (not (and component-canonical-scalars? (= :bool type)))
                                (typed/reference-type? type)))
+        ;; P4 of adr-2609242100: a loop whose result is reference-typed (an
+        ;; accumulated list, say) is a Wasm `loop` too. It used to fall back to
+        ;; a real recursive call per iteration, so building a 10,000-cell
+        ;; list was 10,000 nested Wasm frames and overran Linux CI's default
+        ;; stack (the corpus runner needed --stack-size=4096). The block
+        ;; carries the reference result exactly as it carries an i64 one; the
+        ;; typed-assert-ref after it is unchanged.
         structured-loop? (and (loop-helper-name? (:name function))
                               (structured-loop-body? (:name function)
                                                      (count (:params function))
-                                                     (:body function))
-                              (not (reference-type? (:result function))))
+                                                     (:body function)))
         allocate! (fn [wasm-type]
                     (let [index (+ param-count (count @locals))]
                       (vswap! locals conj wasm-type)
