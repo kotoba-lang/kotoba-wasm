@@ -404,6 +404,8 @@
         (= op 'string=?) :bool
         (= op 'string-contains?) :bool
         (= op 'string-split-count) :i64
+        (contains? '#{string-index-of bytes-count bytes-at} op) :i64
+        (contains? '#{bytes-slice bytes-concat} op) :bytes
         (contains? '#{bool-not option-some? result-ok?
                       result-ok?-of option-some?-of typed-set-contains
                       typed-map-contains string-index-contains} op) :bool

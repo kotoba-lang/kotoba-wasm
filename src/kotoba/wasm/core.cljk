@@ -224,9 +224,15 @@
             (and (= request-type :i64) (= result-type :i64))
             (concat [0x42] (sleb cap-id) request-bytes
                     [::call (get intrinsic-indices 'cap-call)])
+            ;; Every value in an untyped (v2/v3) module is an i64 word, and the
+            ;; generic import is (i32, externref) -> externref: whatever was
+            ;; emitted here could not validate. Refuse by name instead of
+            ;; returning a module that does not.
             :else
-            (concat [0x41] (sleb cap-id) request-bytes
-                    [::call (get intrinsic-indices 'typed-cap-call)])))
+            (throw (ex-info "untyped KIR cannot lower a non-word typed capability call"
+                            {:phase :wasm-lowering
+                             :request-type request-type
+                             :result-type result-type}))))
 
         (contains? '#{pair pair-first pair-second} op)
         (concat (emit-many args env ctx) [::call (get intrinsic-indices op)])
@@ -310,6 +316,12 @@
         (concat (emit-many args env ctx) [::call (get function-indices op)]))))) ; call
 
 (defn- i32-const [value] (into [0x41] (sleb value)))
+
+(def ^:private typed-cap-scalar-box-types
+  "Numeric scalar types that cross the generic externref `cap-call` import
+  inside a one-slot `[:option T]`. `:bool` is not here: it has its own
+  `bool` / `bool-value` intrinsics."
+  #{:i64 :f64 :f32})
 
 (defn- typed-function-signatures [functions]
   (into {} (map (fn [function] [(:name function) function]) functions)))
@@ -939,6 +951,53 @@
             (unbox-bool [code]
               ;; host boolean (externref) -> i32 -> i64 word
               (concat code [::call (get intrinsic-indices 'typed-bool-value)] [0xad]))
+            ;; The generic `kotoba:typed`/`cap-call` import moves host values
+            ;; (externref) both ways. A numeric scalar has no host-side
+            ;; box/unbox intrinsic of its own, so it crosses through a sealed
+            ;; one-slot `[:option T]` -- the same new/push/seal/get sequence
+            ;; every typed aggregate already uses, and the same host-side
+            ;; `assertValue` check of the payload. The descriptors are sealed
+            ;; by `seal-typed-cap-scalar-boxes`. `:bool` has its own pair.
+            ;; Anything else that is a Wasm word here is refused by name
+            ;; rather than emitted as a module that does not validate.
+            (box-cap-scalar [type code]
+              (cond
+                (= :bool type) (box-bool code)
+                (contains? typed-cap-scalar-box-types type)
+                (let [descriptor (descriptor-id [:option type])]
+                  (concat (i32-const descriptor)            ; get-ref descriptor
+                          (i32-const descriptor)            ; seal descriptor
+                          (i32-const descriptor) (i32-const 1)
+                          [::call (get intrinsic-indices 'typed-new)]
+                          code
+                          [::call (get intrinsic-indices
+                                       (symbol (str "typed-push-" (scalar-suffix type))))
+                           ::call (get intrinsic-indices 'typed-seal)]
+                          (i32-const 0)
+                          [::call (get intrinsic-indices 'typed-get-ref)]))
+                (= 0x6f (typed/wasm-type type)) code
+                :else (throw (ex-info "typed capability request type has no host representation"
+                                      {:phase :wasm-typed-lowering :type type}))))
+            (unbox-cap-scalar [type]
+              (cond
+                (= :bool type) (unbox-bool [])
+                (contains? typed-cap-scalar-box-types type)
+                (let [descriptor (descriptor-id [:option type])
+                      value-local (allocate! 0x6f)]
+                  (concat [::local-set value-local]
+                          (i32-const descriptor)            ; get-* descriptor
+                          (i32-const descriptor)            ; seal descriptor
+                          (i32-const descriptor) (i32-const 1)
+                          [::call (get intrinsic-indices 'typed-new)
+                           ::local-get value-local
+                           ::call (get intrinsic-indices 'typed-push-ref)
+                           ::call (get intrinsic-indices 'typed-seal)]
+                          (i32-const 0)
+                          [::call (get intrinsic-indices
+                                       (symbol (str "typed-get-" (scalar-suffix type))))]))
+                (= 0x6f (typed/wasm-type type)) []
+                :else (throw (ex-info "typed capability result type has no host representation"
+                                      {:phase :wasm-typed-lowering :type type}))))
             (emit-builder [type tag item-forms item-types env]
               (let [initial (concat (i32-const (descriptor-id type)) (i32-const tag)
                                     [::call (get intrinsic-indices 'typed-new)])
@@ -2079,8 +2138,18 @@
                         (concat [0x42] (sleb cap-id) request-bytes
                                 [::call (get intrinsic-indices 'cap-call)])
                         :else
-                        (concat (i32-const cap-id) request-bytes
-                                [::call (get intrinsic-indices 'typed-cap-call)])))
+                        ;; The generic import is (i32, externref) -> externref.
+                        ;; A scalar request or result is a Wasm word inside the
+                        ;; module and a host value on the far side, so both ends
+                        ;; are converted here. Until 2026-09-24 neither was: an
+                        ;; `:i64` or `:bool` result left an externref where the
+                        ;; body expected an i64, the compile answered `:ok true`,
+                        ;; and `wasm-tools validate` refused the module
+                        ;; ("expected i64, found externref").
+                        (concat (i32-const cap-id)
+                                (box-cap-scalar request-type request-bytes)
+                                [::call (get intrinsic-indices 'typed-cap-call)]
+                                (unbox-cap-scalar result-type))))
                     (= op 'i64-extend-i32-u)
                     (concat (emit* (first args) env) [0xad])
                     (= op 'component-unreachable)
@@ -2434,6 +2503,13 @@
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
                             [::call (get intrinsic-indices 'typed-string-contains) 0xad])
+                    ;; UTF-8 byte offset of the first match, -1 when absent,
+                    ;; empty needle refused (lang/guest-grammar.edn; the KIR
+                    ;; reference is `kotoba.kir.value/utf8-index-of!`).
+                    (= op 'string-index-of)
+                    (concat (i32-const (descriptor-id :string))
+                            (emit* (first args) env) (emit* (second args) env)
+                            [::call (get intrinsic-indices 'typed-string-index-of)])
                     (= op 'string-split-count)
                     (concat (i32-const (descriptor-id :string))
                             (emit* (first args) env) (emit* (second args) env)
@@ -2460,6 +2536,31 @@
                     (= op 'bytes-empty)
                     (concat (i32-const (descriptor-id :bytes))
                             [::call (get intrinsic-indices 'typed-bytes-empty)])
+                    ;; `:bytes` is a host value (a Uint8Array of at most 65536
+                    ;; bytes, lang/surface-status.edn `:max-value-bytes`), so
+                    ;; every operation on it is a host intrinsic. kotoba-sema
+                    ;; states what the host owes (frontend `bytes-at`,
+                    ;; `bytes-slice`, `bytes-concat`): an unsigned byte widened
+                    ;; to i64; a trap -- never a read past the operand -- when
+                    ;; an index or `0 <= start <= end <= count` does not hold;
+                    ;; a fresh result, bounded like every other bytes value.
+                    ;; Each is imported only by a module that uses it.
+                    (= op 'bytes-count)
+                    (concat (i32-const (descriptor-id :bytes)) (emit* (first args) env)
+                            [::call (get intrinsic-indices 'typed-bytes-count)])
+                    (= op 'bytes-at)
+                    (concat (i32-const (descriptor-id :bytes))
+                            (emit* (first args) env) (emit* (second args) env)
+                            [::call (get intrinsic-indices 'typed-bytes-at)])
+                    (= op 'bytes-slice)
+                    (concat (i32-const (descriptor-id :bytes))
+                            (emit* (nth args 0) env) (emit* (nth args 1) env)
+                            (emit* (nth args 2) env)
+                            [::call (get intrinsic-indices 'typed-bytes-slice)])
+                    (= op 'bytes-concat)
+                    (concat (i32-const (descriptor-id :bytes))
+                            (emit* (first args) env) (emit* (second args) env)
+                            [::call (get intrinsic-indices 'typed-bytes-concat)])
                     (= op 'vector-new)
                     (if (get intrinsic-indices 'typed-vector-from-memory-i64)
                       (emit-vector-i64-bulk args env)
@@ -3130,6 +3231,29 @@
 (defn- i64-word-typed-cap? [contract]
   (and (= :i64 (:request-type contract))
        (= :i64 (:result-type contract))))
+
+(defn- seal-typed-cap-scalar-boxes
+  "Make the `[:option T]` descriptors the generic typed `cap-call` lowering
+  boxes numeric scalars through part of the module's sealed descriptor table.
+
+  The table is derived by walking the KIR (`typed/descriptor-indices`,
+  `typed/metadata-bytes`, `typed/requires-host-runtime?` all do), so the
+  descriptors are added as one namespaced key the walk reaches. Nothing is
+  added when the module binds named capability imports (those carry their
+  own signature) or makes no generic scalar-typed call; such a module is
+  returned unchanged, so its bytes do not move."
+  [kir capability-imports]
+  (if (seq capability-imports)
+    kir
+    (let [boxes (->> (typed-cap-call-contracts (:functions kir))
+                     (remove i64-word-typed-cap?)
+                     (mapcat (juxt :request-type :result-type))
+                     (filter typed-cap-scalar-box-types)
+                     distinct
+                     (sort-by pr-str)
+                     (mapv (fn [type] [:option type])))]
+      (cond-> kir
+        (seq boxes) (assoc ::typed-cap-scalar-boxes boxes)))))
 (def ^:private scalar-vector-local-limit
   "Maximum literal width represented as individual Wasm locals. This bounds
   local declarations and selector depth independently of the larger
@@ -3419,6 +3543,41 @@
               [0x20 4 0x0b])]
     (concat (uleb (count body)) body)))
 
+;; The emitter is not allowed to answer with a module that does not validate.
+;; Measured 2026-09-24 (amu a6f1d90e, this repo f5fdbc5): a `typed-cap-call`
+;; with an `:i64` or `:bool` result compiled through `amu compile --target
+;; wasm32-browser --jvm-free` with `:ok true`, and the module it wrote was
+;; refused by `wasm-tools validate` ("type mismatch: expected i64, found
+;; externref"). Nothing between the emitter and the file ever asked.
+;;
+;; The check is the host's own Wasm engine, `WebAssembly.validate` -- the full
+;; core-spec validator every browser and Node ship, present wherever the
+;; ClojureScript side of this namespace runs, with no binary to pin or spawn.
+;; Every `amu compile` of a Wasm target runs there: the amu JVM route was
+;; removed on 2026-09-11. A host without an engine is refused with its own
+;; sentence, never passed through as if it had validated.
+;;
+;; The JVM branch has no engine and does not validate here; the JVM test
+;; suite validates every module it emits with the pinned `wasm-tools`. The
+;; emission arms that are known to be word/externref-sensitive (the generic
+;; `typed-cap-call`) refuse unrepresentable types by name on both hosts.
+(defn- self-validate! [module]
+  #?(:clj module
+     :cljs
+     (do
+       (when-not (some? (.-WebAssembly js/globalThis))
+         (throw (ex-info "emitted Wasm module cannot be self-validated: this host has no WebAssembly engine"
+                         {:phase :wasm-self-validation})))
+       (when-not (js/WebAssembly.validate module)
+         (let [reason (try
+                        (js/WebAssembly.Module. module)
+                        "WebAssembly.validate refused the module; WebAssembly.Module did not say why"
+                        (catch :default error (.-message error)))]
+           (throw (ex-info "emitted Wasm module does not validate"
+                           {:phase :wasm-self-validation
+                            :engine-message reason}))))
+       module)))
+
 (defn emit
   ([kir target] (emit kir target {}))
   ([kir target {:keys [component-standard32? fuel memory-pages capability-imports
@@ -3429,6 +3588,9 @@
         ;; table, literal table, inference and emission all read one map
         ;; vocabulary. See `kotoba.wasm.typed/lower-bounded-maps`.
         kir (typed/lower-bounded-maps kir)
+        kir (cond-> kir
+              (= :kotoba.kir/v4 (:format kir))
+              (seal-typed-cap-scalar-boxes capability-imports))
         fuel-initial (fuel-budget! fuel)
         memory-maximum (component-memory-budget! memory-pages)
         functions (:functions kir)
@@ -3518,6 +3680,11 @@
         has-keyword-from-string? (uses-operation? functions '#{keyword-from-string})
         has-symbol-from-string? (uses-operation? functions '#{symbol})
         has-bytes-empty? (uses-operation? functions '#{bytes-empty})
+        has-bytes-count? (uses-operation? functions '#{bytes-count})
+        has-bytes-at? (uses-operation? functions '#{bytes-at})
+        has-bytes-slice? (uses-operation? functions '#{bytes-slice})
+        has-bytes-concat? (uses-operation? functions '#{bytes-concat})
+        has-string-index-of? (uses-operation? functions '#{string-index-of})
         has-bulk-vector? (and typed?
                               (uses-operation? (:functions runtime-kir)
                                                '#{vector-new}))
@@ -3566,6 +3733,21 @@
                          (when has-string-contains?
                            [['typed-string-contains "kotoba:typed" "string-contains"
                              [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]])
+                         (when has-bytes-count?
+                           [['typed-bytes-count "kotoba:typed" "bytes-count"
+                             [0x60 2 0x7f 0x6f 1 0x7e]]])
+                         (when has-bytes-at?
+                           [['typed-bytes-at "kotoba:typed" "bytes-at"
+                             [0x60 3 0x7f 0x6f 0x7e 1 0x7e]]])
+                         (when has-bytes-slice?
+                           [['typed-bytes-slice "kotoba:typed" "bytes-slice"
+                             [0x60 4 0x7f 0x6f 0x7e 0x7e 1 0x6f]]])
+                         (when has-bytes-concat?
+                           [['typed-bytes-concat "kotoba:typed" "bytes-concat"
+                             [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]])
+                         (when has-string-index-of?
+                           [['typed-string-index-of "kotoba:typed" "string-index-of"
+                             [0x60 3 0x7f 0x6f 0x6f 1 0x7e]]])
                          (when has-string-split-count?
                            [['typed-string-split-count "kotoba:typed" "string-split-count"
                              [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]])
@@ -3874,8 +4056,9 @@
                           (section 5 [1 1 component-memory-pages memory-maximum]))
                         (section 6 global-sec)
                         (section 7 export-sec) (section 10 code-sec))]
-      #?(:clj (byte-array (map unchecked-byte bytes))
-         :cljs (js/Uint8Array.from (clj->js (map #(bit-and % 0xff) bytes))))))))
+      (self-validate!
+       #?(:clj (byte-array (map unchecked-byte bytes))
+          :cljs (js/Uint8Array.from (clj->js (map #(bit-and % 0xff) bytes)))))))))
 
 (defn emit-component-core
   "Emit a standard32-named core module for Component Model Canonical lifting.

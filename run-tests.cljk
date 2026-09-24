@@ -16,7 +16,8 @@
   (:require [cljs.test :as t]
             [kotoba.wasm-bounded-map-test]
             [kotoba.wasm-capability-key-test]
-            [kotoba.wasm-tools-portable-test]))
+            [kotoba.wasm-tools-portable-test]
+            [kotoba.wasm-typed-cap-scalar-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
   (println (str "\nnbb: " (:test m) " tests, " (:pass m) " passed, "
@@ -26,4 +27,5 @@
 
 (t/run-tests 'kotoba.wasm-bounded-map-test
              'kotoba.wasm-capability-key-test
-             'kotoba.wasm-tools-portable-test)
+             'kotoba.wasm-tools-portable-test
+             'kotoba.wasm-typed-cap-scalar-test)
