@@ -406,6 +406,12 @@
         (= op 'string-split-count) :i64
         (contains? '#{string-index-of bytes-count bytes-at} op) :i64
         (contains? '#{bytes-slice bytes-concat} op) :bytes
+        ;; 2026-09-25 (superproject adr-2609242330): the bytes constructor,
+        ;; its inverse and the string constructor -- host intrinsics like the
+        ;; four reads above.
+        (= op 'bytes-from-vector-i64) :bytes
+        (= op 'vector-i64-from-bytes) :vector-i64
+        (= op 'string-from-utf8) :string
         (contains? '#{bool-not option-some? result-ok?
                       result-ok?-of option-some?-of typed-set-contains
                       typed-map-contains string-index-contains} op) :bool

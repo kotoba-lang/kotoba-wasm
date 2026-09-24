@@ -20,7 +20,9 @@
        org.clojure/clojure {:mvn/version "1.12.0"}
         io.github.kotoba-lang/osaho
         {:git/url "https://github.com/kotoba-lang/osaho.git"
-         :git/sha "194623b9e8274a50a3aadaa0dd2254a63feceba1"}}
+         ;; Advanced 2026-09-25, 194623b9 -> 353dd5f3 (osaho main, ahead 275, forward only):
+         ;; the descriptor table names :bytes / :vector-i64 / :string for the bytes constructors, which this emitter seals (superproject adr-2609242330).
+         :git/sha "353dd5f30bf803528f355f3b8090413a71e51bc8"}}
  :aliases {:test {:extra-paths ["test"]
                   :extra-deps {io.github.cognitect-labs/test-runner
                                {:git/url "https://github.com/cognitect-labs/test-runner.git"

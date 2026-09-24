@@ -101,7 +101,12 @@
    ["bytes-at" '(bytes-at a b) [:bytes :i64] :i64]
    ["bytes-slice" '(bytes-slice a b c) [:bytes :i64 :i64] :bytes]
    ["bytes-concat" '(bytes-concat a b) [:bytes :bytes] :bytes]
-   ["string-index-of" '(string-index-of a b) [:string :string] :i64]])
+   ["string-index-of" '(string-index-of a b) [:string :string] :i64]
+   ;; 2026-09-25 (superproject adr-2609242330): the bytes constructor, its
+   ;; inverse and the string constructor -- each one host intrinsic.
+   ["bytes-from-vector-i64" '(bytes-from-vector-i64 a) [:vector-i64] :bytes]
+   ["vector-i64-from-bytes" '(vector-i64-from-bytes a) [:bytes] :vector-i64]
+   ["string-from-utf8" '(string-from-utf8 a) [:bytes] :string]])
 
 (defn- import-names [module]
   #?(:clj (let [text (String. ^bytes module "ISO-8859-1")]
