@@ -6,7 +6,8 @@
                     [kotoba.kir.compatibility :as compatibility])
      :cljs (:require [kotoba.wasm.typed :as typed]
                      [kotoba.kir.compatibility :as compatibility]
-                     [kotoba.kir.cljs-i64 :as i64])))
+                     [kotoba.kir.cljs-i64 :as i64]))
+  (:require [kotoba.bytes :as kbytes]))
 
 ;; `uleb` only ever encodes small, non-negative, interpreter-internal counts
 ;; and indices in this file (section/payload lengths, function/type/import
@@ -98,7 +99,7 @@
 
 (defn- section [id payload] (into [id] (concat (uleb (count payload)) payload)))
 (defn- utf8 [s]
-  #?(:clj (mapv #(bit-and (int %) 0xff) (.getBytes ^String s "UTF-8"))
+  #?(:clj (mapv #(bit-and (int %) 0xff) (kbytes/utf8-bytes ^String s))
      :cljs (vec (js/Array.from (.encode (js/TextEncoder.) s)))))
 (defn- name-bytes [s] (let [bs (utf8 s)] (into (uleb (count bs)) bs)))
 

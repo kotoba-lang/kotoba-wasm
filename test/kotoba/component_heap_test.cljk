@@ -8,7 +8,7 @@
   These tests run the emitted allocator, rather than inspecting it, because a
   byte-level port is exactly the kind of change that can look right and be
   wrong."
-  (:require [kotoba.io :as kio] [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.lang.error :as kerror] [kotoba.io :as kio] [kotoba.test :refer [deftest is testing]]
             [clojure.java.io :as io]
             [kotoba.lang.text :as str]
             [kotoba.wasm.core :as wasm]
@@ -129,11 +129,11 @@
           (let [first-ptr (call 0 0 8 16)]
             (is (= (str wasm/component-arena-base) first-ptr))))
         (testing "an over-capacity request traps rather than corrupting memory"
-          (is (thrown? clojure.lang.ExceptionInfo
+          (is (thrown? kerror/ExceptionInfo
                        (call 0 0 8 (inc wasm/component-arena-capacity)))))
         (testing "a non-power-of-two alignment traps"
-          (is (thrown? clojure.lang.ExceptionInfo (call 0 0 3 8))))
+          (is (thrown? kerror/ExceptionInfo (call 0 0 3 8))))
         (testing "an alignment beyond 8 traps"
-          (is (thrown? clojure.lang.ExceptionInfo (call 0 0 16 8))))
+          (is (thrown? kerror/ExceptionInfo (call 0 0 16 8))))
         (testing "a zero alignment traps"
-          (is (thrown? clojure.lang.ExceptionInfo (call 0 0 0 8))))))))
+          (is (thrown? kerror/ExceptionInfo (call 0 0 0 8))))))))

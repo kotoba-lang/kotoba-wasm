@@ -1,5 +1,5 @@
 (ns kotoba.wasm-test
-  (:require [kotoba.io :as kio] [kotoba.process :as shell]
+  (:require [kotoba.lang.error :as kerror] [kotoba.io :as kio] [kotoba.process :as shell]
             [kotoba.lang.text :as str]
             [kotoba.test :refer [deftest is testing]]
             [kotoba.wasm.core :as wasm]
@@ -24,7 +24,7 @@
     (is (= 4611686018427387903 wasm/max-fuel))
     (is (bytes? (wasm/emit kir :wasm32-kotoba-v1 {:fuel wasm/max-fuel})))
     (is (thrown-with-msg?
-         clojure.lang.ExceptionInfo
+         kerror/ExceptionInfo
          #"exceeds the representable ceiling"
          (wasm/emit kir :wasm32-kotoba-v1 {:fuel (inc wasm/max-fuel)})))))
 (deftest frontend-loop-helpers-use-structured-wasm-without-growing-host-stack
@@ -531,7 +531,7 @@
   ;; lowering time instead, with the item type named.
   (doseq [item-type [:f64 :f32 :bool]]
     (is (thrown-with-msg?
-         clojure.lang.ExceptionInfo #"typed list nth has no intrinsic"
+         kerror/ExceptionInfo #"typed list nth has no intrinsic"
          (wasm/emit (list-nth-kir item-type :items (if (= item-type :bool) [true false] [1.5 2.5]))
                     :wasm32-wasi-kotoba-v1))
         (str item-type " must be refused, not emitted as a ref call"))))
@@ -662,7 +662,7 @@
     (is (str/includes? text "cm32p2|kotoba:application/clock@1"))
     (is (not (str/includes? text (str "kotoba:typed" (char 8) "cap-call"))))
     (is (thrown-with-msg?
-         clojure.lang.ExceptionInfo #"requires a named import"
+         kerror/ExceptionInfo #"requires a named import"
          (wasm/emit-component-core
           kir :wasm32-wasi-kotoba-v1
           {:component-canonical-scalars? true}))
@@ -699,12 +699,12 @@
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"requires a named import"
+           kerror/ExceptionInfo #"requires a named import"
            (wasm/emit-component-core
             kir :wasm32-wasi-kotoba-v1
             (dissoc opts :capability-imports))))
       (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"item validation plan is invalid"
+           kerror/ExceptionInfo #"item validation plan is invalid"
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-option-list-capability-count
@@ -720,7 +720,7 @@
             :wasm32-wasi-kotoba-v1 opts))
           "kind 2 validates inline Canonical bool items")
       (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"item validation plan is invalid"
+           kerror/ExceptionInfo #"item validation plan is invalid"
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-option-list-capability-count
@@ -739,7 +739,7 @@
                             [3 2 8 16]
                             [3 1]]]
         (is (thrown-with-msg?
-             clojure.lang.ExceptionInfo #"item validation plan is invalid"
+             kerror/ExceptionInfo #"item validation plan is invalid"
              (wasm/emit-component-core
               (assoc-in
                kir [:functions 0 :body]
@@ -760,7 +760,7 @@
                             [4 16 1 8 3]
                             [4 16 1 0 1]]]
         (is (thrown-with-msg?
-             clojure.lang.ExceptionInfo #"item validation plan is invalid"
+             kerror/ExceptionInfo #"item validation plan is invalid"
              (wasm/emit-component-core
               (assoc-in
                kir [:functions 0 :body]
@@ -783,7 +783,7 @@
                             [5 2 4 1048576 3 0 2 0]
                             [5 2 4 1048576 1 65536 2 1]]]
         (is (thrown-with-msg?
-             clojure.lang.ExceptionInfo #"item validation plan is invalid"
+             kerror/ExceptionInfo #"item validation plan is invalid"
              (wasm/emit-component-core
               (assoc-in
                kir [:functions 0 :body]
@@ -809,7 +809,7 @@
                [6 1048576 16384 3 1 12 1]
                [6 1048576 16384 1 0]]]
         (is (thrown-with-msg?
-             clojure.lang.ExceptionInfo #"item validation plan is invalid"
+             kerror/ExceptionInfo #"item validation plan is invalid"
              (wasm/emit-component-core
               (assoc-in
                kir [:functions 0 :body]
@@ -851,21 +851,21 @@
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"request case is invalid"
+           kerror/ExceptionInfo #"request case is invalid"
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-result-list-capability-count
                         7 2 pointer count 16 8 8 16 8))
             :wasm32-wasi-kotoba-v1 opts)))
       (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"result layout is invalid"
+           kerror/ExceptionInfo #"result layout is invalid"
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-result-list-capability-count
                         7 0 pointer count 16 1 1 16 8 3))
             :wasm32-wasi-kotoba-v1 opts)))
       (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"requires a named import"
+           kerror/ExceptionInfo #"requires a named import"
            (wasm/emit-component-core
             kir :wasm32-wasi-kotoba-v1
             (dissoc opts :capability-imports))))
@@ -902,12 +902,12 @@
       (let [validated (shell/sh "wasm-tools" "validate" (str path))]
         (is (zero? (:exit validated)) (:err validated)))
       (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"requires a named import"
+           kerror/ExceptionInfo #"requires a named import"
            (wasm/emit-component-core
             kir :wasm32-wasi-kotoba-v1
             (dissoc opts :capability-imports))))
       (is (thrown-with-msg?
-           clojure.lang.ExceptionInfo #"result layout is invalid"
+           kerror/ExceptionInfo #"result layout is invalid"
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-option-record-capability-project-i64
@@ -1165,18 +1165,18 @@
 
 (deftest a-malformed-structural-position-is-refused-by-name
   (is (thrown-with-msg?
-       clojure.lang.ExceptionInfo
+       kerror/ExceptionInfo
        #"non-negative integer literal"
        (typed/host-index 'runtime-value 'form)))
   (is (thrown-with-msg?
-       clojure.lang.ExceptionInfo
+       kerror/ExceptionInfo
        #"non-negative integer literal"
        (typed/host-index -1 'form)))
   (is (= :wasm-typed-lowering
          (:phase (try (typed/host-index nil 'form)
-                      (catch clojure.lang.ExceptionInfo error (ex-data error))))))
+                      (catch kerror/ExceptionInfo error (ex-data error))))))
   (is (thrown-with-msg?
-       clojure.lang.ExceptionInfo
+       kerror/ExceptionInfo
        #"out of range"
        (typed/hetero-item-type [:vector [:i64 :f64]] 2 'form))))
 

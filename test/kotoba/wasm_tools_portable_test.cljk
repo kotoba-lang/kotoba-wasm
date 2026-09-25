@@ -38,7 +38,7 @@
 
 (defn- refusal [f]
   (try (f) nil
-       (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e
+       (catch :default e
          (ex-message e))))
 
 (deftest a-missing-binary-is-a-named-refusal
@@ -58,7 +58,7 @@
 
 (deftest the-parser-refuses-a-module-that-is-not-wat
   (let [e (try (wasm-tools/parse-wat "(module (func (export \"x\") (result i32) nonsense))") nil
-               (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) e e))]
+               (catch :default e e))]
     (is (some? e))
     (is (= "pinned wasm-tools command failed" (ex-message e)))
     (is (not (zero? (or (:exit (ex-data e)) 1))))))

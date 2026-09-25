@@ -1,5 +1,5 @@
 (ns kotoba.canonical-abi-test
-  (:require [kotoba.test :refer [deftest is]]
+  (:require [kotoba.lang.error :as kerror] [kotoba.test :refer [deftest is]]
             [kotoba.wasm.canonical-abi :as canonical]
             [kotoba.kir.value :as value]))
 
@@ -10,7 +10,7 @@
           :encoding :utf8 :max-bytes 65536
           :validation [:checked-pointer-range :valid-utf8]}
          (canonical/layout :string)))
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"no qualified Canonical ABI layout"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"no qualified Canonical ABI layout"
                         (canonical/layout [:vector :i64]))))
 
 (deftest string-export-uses-standard32-indirect-result
@@ -76,7 +76,7 @@
             (canonical/export-plan
              {:name 'echo :params ['value] :param-types [descriptor] :result descriptor}
              schemas))))
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"matching schema identity"
+    (is (thrown-with-msg? kerror/ExceptionInfo #"matching schema identity"
                           (canonical/layout descriptor
                                             {:demo/point [:record :demo/other [[:x :i64]]]})))))
 
@@ -107,7 +107,7 @@
             (canonical/export-plan
              {:name 'echo :params ['value] :param-types [descriptor] :result descriptor}
              schemas))))
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"recursive schema has no bounded"
+    (is (thrown-with-msg? kerror/ExceptionInfo #"recursive schema has no bounded"
                           (canonical/layout [:ref :demo/self]
                                             {:demo/self [:record :demo/self
                                                          [[:child [:ref :demo/self]]]]})))))
@@ -202,13 +202,13 @@
              schemas))))))
 
 (deftest variant-reference-requires-matching-sealed-schema-identity
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"variant reference has no matching schema identity"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"variant reference has no matching schema identity"
                         (canonical/layout [:ref :demo/outcome]
                                           {:demo/outcome [:variant :demo/other
                                                           [[:a :bool]]]}))))
 
 (deftest variant-schema-recursion-through-a-case-payload-is-rejected
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"recursive schema has no bounded"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"recursive schema has no bounded"
                         (canonical/layout [:ref :demo/self]
                                           {:demo/self [:variant :demo/self
                                                        [[:child [:ref :demo/self]]]]}))))
@@ -313,7 +313,7 @@
            (get-in layout [:item-layout :max-total-items])))))
 
 (deftest list-item-type-must-be-a-qualified-canonical-abi-descriptor
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"no qualified Canonical ABI layout"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"no qualified Canonical ABI layout"
                         (canonical/layout [:list :not-a-real-descriptor]))))
 
 (deftest list-item-type-recursive-schema-through-the-list-is-still-rejected
@@ -323,7 +323,7 @@
   ;; identity is still a genuinely unbounded recursive schema, and is still
   ;; caught by `record-layout`'s existing `visited` guard, since `visited`
   ;; is threaded through `list-layout` unchanged.
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"recursive schema has no bounded"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"recursive schema has no bounded"
                         (canonical/layout [:ref :demo/wrapper]
                                           {:demo/wrapper
                                            [:record :demo/wrapper
@@ -359,7 +359,7 @@
              {:name 'echo :params ['value] :param-types [descriptor] :result descriptor}))))))
 
 (deftest option-descriptor-arity-is-checked
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+  (is (thrown-with-msg? kerror/ExceptionInfo
                         #"option descriptor must be exactly \[:option item-descriptor\]"
                         (canonical/layout [:option]))))
 
@@ -414,10 +414,10 @@
     (is (= 4 (:alignment value)))))
 
 (deftest result-descriptor-arity-is-checked
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+  (is (thrown-with-msg? kerror/ExceptionInfo
                         #"result descriptor must be exactly \[:result ok-descriptor err-descriptor\]"
                         (canonical/layout [:result :i64])))
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+  (is (thrown-with-msg? kerror/ExceptionInfo
                         #"result descriptor must be exactly \[:result ok-descriptor err-descriptor\]"
                         (canonical/layout [:result :i64 :bool :string]))))
 
@@ -485,24 +485,24 @@
   (is (= :result (get-in (canonical/layout [:result [:result :i64 :bool] :bool]) [:ok-layout :kind]))))
 
 (deftest option-item-type-must-be-a-qualified-canonical-abi-descriptor
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"no qualified Canonical ABI layout"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"no qualified Canonical ABI layout"
                         (canonical/layout [:option :not-a-real-descriptor]))))
 
 (deftest result-payload-types-must-be-qualified-canonical-abi-descriptors
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"no qualified Canonical ABI layout"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"no qualified Canonical ABI layout"
                         (canonical/layout [:result :not-a-real-descriptor :bool])))
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"no qualified Canonical ABI layout"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"no qualified Canonical ABI layout"
                         (canonical/layout [:result :bool :not-a-real-descriptor]))))
 
 (deftest option-item-type-recursive-schema-through-the-option-is-still-rejected
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"recursive schema has no bounded"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"recursive schema has no bounded"
                         (canonical/layout [:ref :demo/maybe-wrapper]
                                           {:demo/maybe-wrapper
                                            [:record :demo/maybe-wrapper
                                             [[:maybe [:option [:ref :demo/maybe-wrapper]]]]]}))))
 
 (deftest result-payload-type-recursive-schema-through-the-result-is-still-rejected
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"recursive schema has no bounded"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"recursive schema has no bounded"
                         (canonical/layout [:ref :demo/attempt-wrapper]
                                           {:demo/attempt-wrapper
                                            [:record :demo/attempt-wrapper
@@ -553,13 +553,13 @@
              {:name 'echo :params ['value] :param-types [descriptor] :result descriptor}))))))
 
 (deftest tuple-descriptor-must-have-at-least-one-item-type
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo
+  (is (thrown-with-msg? kerror/ExceptionInfo
                         #"tuple descriptor must have at least one item type"
                         (canonical/layout [:tuple]))))
 
 (deftest tuple-item-count-exceeding-the-bound-is-rejected
   (let [item-descriptors (repeat (inc value/canonical-tuple-item-limit) :i64)]
-    (is (thrown-with-msg? clojure.lang.ExceptionInfo #"tuple item count exceeds bound"
+    (is (thrown-with-msg? kerror/ExceptionInfo #"tuple item count exceeds bound"
                           (canonical/layout (into [:tuple] item-descriptors)))))
   ;; The bound itself is admitted (not off-by-one rejected).
   (let [item-descriptors (repeat value/canonical-tuple-item-limit :i64)]
@@ -631,7 +631,7 @@
                         [:item-layouts 0 :kind]))))
 
 (deftest tuple-item-type-must-be-a-qualified-canonical-abi-descriptor
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"no qualified Canonical ABI layout"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"no qualified Canonical ABI layout"
                         (canonical/layout [:tuple :not-a-real-descriptor]))))
 
 (deftest tuple-item-type-recursive-schema-through-the-tuple-is-still-rejected
@@ -641,7 +641,7 @@
   ;; identity is still a genuinely unbounded recursive schema, and is still
   ;; caught by `record-layout`'s existing `visited` guard, since `visited` is
   ;; threaded through `tuple-layout` unchanged.
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"recursive schema has no bounded"
+  (is (thrown-with-msg? kerror/ExceptionInfo #"recursive schema has no bounded"
                         (canonical/layout [:ref :demo/tuple-wrapper]
                                           {:demo/tuple-wrapper
                                            [:record :demo/tuple-wrapper
