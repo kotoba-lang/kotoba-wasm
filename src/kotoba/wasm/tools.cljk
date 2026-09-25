@@ -9,13 +9,14 @@
   branch is the one that was here; the Node branch spawns the same commands
   through `node:child_process` with no shell in between."
   {:kotoba/export [assert-version! parse-wat run-command! version]}
-  #?(:clj (:import [java.nio.charset StandardCharsets]
+  #?(:clj (:import
                    [java.nio.file Files]
                    [java.nio.file.attribute FileAttribute])
      :cljs (:require ["node:child_process" :as child]
                      ["node:fs" :as fs]
                      ["node:os" :as os]
-                     ["node:path" :as path])))
+                     ["node:path" :as path]))
+  (:require [kotoba.bytes :as kbytes]))
 
 (def version "1.243.0")
 
@@ -26,7 +27,7 @@
   #?(:clj
      (let [process (.start (doto (ProcessBuilder. ^java.util.List (vec args))
                              (.redirectErrorStream true)))
-           output (String. (.readAllBytes (.getInputStream process)) StandardCharsets/UTF_8)
+           output (kbytes/utf8-string (.readAllBytes (.getInputStream process)))
            exit (.waitFor process)]
        (when-not (zero? exit)
          (reject "pinned wasm-tools command failed"

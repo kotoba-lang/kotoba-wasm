@@ -17,7 +17,7 @@
   against a stub `kotoba:typed` host written here -- enough to show which
   values cross each import and in which order; the real host semantics are
   amu's `runtime/browser-host.mjs`."
-  (:require [kotoba.test :refer [deftest is testing]]
+  (:require [kotoba.io :as kio] [kotoba.test :refer [deftest is testing]]
             [kotoba.wasm.core :as wasm]
             [kotoba.wasm.tools :as wasm-tools]))
 
@@ -27,8 +27,7 @@
   #?(:clj
      (let [file (java.io.File/createTempFile "kotoba-typed-cap-scalar-" ".wasm")]
        (try
-         (java.nio.file.Files/write (.toPath file) ^bytes module
-                                    (make-array java.nio.file.OpenOption 0))
+         (kio/write-bytes file ^bytes module)
          (try (wasm-tools/run-command! ["wasm-tools" "validate" (str file)]) nil
               (catch clojure.lang.ExceptionInfo error
                 (or (:output (ex-data error)) (ex-message error))))
@@ -42,7 +41,7 @@
   "The module, or the refusal message when the emitter refuses."
   [kir]
   (try (wasm/emit kir :wasm32-browser-kotoba-v1 {:fuel 512})
-       (catch #?(:clj clojure.lang.ExceptionInfo :cljs :default) error
+       (catch :default error
          {:refused (ex-message error) :data (ex-data error)})))
 
 (defn- cap-module [request-type result-type param-type]

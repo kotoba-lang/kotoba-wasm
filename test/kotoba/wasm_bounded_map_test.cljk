@@ -146,6 +146,6 @@
             typed value runtime rejects a 32nd entry. The two numbers differ,
             so the refusal is here and named rather than a trap at run time."
     (is (thrown-with-msg?
-         #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+         js/Error
          #"bounded map exceeds the typed map entry budget"
          (wasm/emit (literal-map-of 32) :wasm32-kotoba-v1 {:fuel 512})))))
