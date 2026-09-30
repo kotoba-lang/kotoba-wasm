@@ -18,7 +18,7 @@
 ;; :clj for values in this range; dropped for :cljs since cljs has no
 ;; `long`).
 (defn- uleb [n]
-  (loop [n #?(:clj (long n) :cljs n) out []]
+  (loop [n #?(:clj (long n) :default n) out []]
     (let [b (bit-and n 0x7f) n' (unsigned-bit-shift-right n 7)]
       (if (zero? n') (conj out b) (recur n' (conj out (bit-or b 0x80)))))))
 
@@ -33,7 +33,13 @@
 ;; bigint throughout via `cljs-i64`, using `i64/ashr` (see its own
 ;; docstring) in place of `bit-shift-right`.
 (defn- sleb [n]
-  #?(:clj
+  #?(:kotoba
+     (loop [n n out []]
+       (let [b (bit-and n 0x7f) n' (bit-shift-right n 7)
+             done (or (and (= n' 0) (zero? (bit-and b 0x40)))
+                      (and (= n' -1) (not (zero? (bit-and b 0x40)))))]
+         (if done (conj out b) (recur n' (conj out (bit-or b 0x80))))))
+     :clj
      (loop [n (long n) out []]
        (let [b (bit-and n 0x7f) n' (bit-shift-right n 7)
              done (or (and (= n' 0) (zero? (bit-and b 0x40)))
@@ -101,7 +107,8 @@
 
 (defn- section [id payload] (into [id] (concat (uleb (count payload)) payload)))
 (defn- utf8 [s]
-  #?(:clj (mapv #(bit-and (int %) 0xff) (kbytes/utf8-bytes ^String s))
+  #?(:kotoba (mapv #(bit-and % 0xff) (kbytes/utf8-bytes s))
+     :clj (mapv #(bit-and (int %) 0xff) (kbytes/utf8-bytes ^String s))
      :cljs (vec (js/Array.from (.encode (js/TextEncoder.) s)))))
 (defn- name-bytes [s] (let [bs (utf8 s)] (into (uleb (count bs)) bs)))
 
@@ -166,7 +173,7 @@
     ;; from `kotoba.kir`'s coercion once it passes through there)
     ;; or a plain number (synthesized directly by `kotoba.compiler.frontend`
     ;; -- e.g. `when`'s trailing `0`); `sleb` above accepts either.
-    #?(:clj (integer? form) :cljs (or (i64/bigint-value? form) (integer? form)))
+    #?(:kotoba (integer? form) :clj (integer? form) :cljs (or (i64/bigint-value? form) (integer? form)))
     (into [0x42] (sleb form))                                    ; i64.const
     ;; `:bool` is a plain 0/1 word in this profile -- comparisons already emit
     ;; one, and `true`/`false` literals (produced by the `not` / `if-not` /
@@ -377,7 +384,8 @@
     (concat (uleb (count body)) body)))
 
 (defn- exact-i64 [text]
-  #?(:clj (Long/parseLong text) :cljs (js/BigInt text)))
+  #?(:kotoba (option-value-of :i64 (parse-long text) 0)
+     :clj (Long/parseLong text) :cljs (js/BigInt text)))
 
 (defn- f64-constant [bits]
   (list 'f64-from-bits (if (string? bits) (exact-i64 bits) bits)))
@@ -2004,7 +2012,8 @@
             ;; extension, preserving the existing typed ABI exactly.
             (emit-i32* [form env]
               (cond
-                (and #?(:clj (integer? form)
+                (and #?(:kotoba (integer? form)
+                        :clj (integer? form)
                         :cljs (or (i64/bigint-value? form) (integer? form)))
                      (<= -2147483648 form 2147483647))
                 (i32-const form)
@@ -2042,7 +2051,8 @@
               ([form env tail-loop-depth]
                (cond
                 (and (map? form) (contains? form :wasm-local)) [::local-get (:wasm-local form)]
-                #?(:clj (integer? form)
+                #?(:kotoba (integer? form)
+                   :clj (integer? form)
                    :cljs (or (i64/bigint-value? form) (integer? form)))
                 (into [0x42] (sleb form))
                 (and component-canonical-scalars? (boolean? form))
@@ -3450,21 +3460,25 @@
   ;; ClojureScript bitwise shifts are int32 operations: `(bit-shift-left 1 62)`
   ;; silently means a shift by 30. Keep the Node compiler's limit in the exact
   ;; BigInt domain used by `sleb` for every `.kotoba` i64 value.
-  #?(:clj (dec (bit-shift-left 1 62))
+  #?(:kotoba 4611686018427387903
+     :clj (dec (bit-shift-left 1 62))
      :cljs (- (js/BigInt "4611686018427387904") (js/BigInt 1))))
 
 (defn- exact-integer? [value]
-  #?(:clj (integer? value)
+  #?(:kotoba (integer? value)
+     :clj (integer? value)
      :cljs (or (integer? value) (i64/bigint-value? value))))
 
 (defn- positive-fuel? [value]
-  #?(:clj (pos? value)
+  #?(:kotoba (pos? value)
+     :clj (pos? value)
      :cljs (if (i64/bigint-value? value)
              (i64/k-pos? value)
              (pos? value))))
 
 (defn- fuel-over-ceiling? [value]
-  #?(:clj (> value max-fuel)
+  #?(:kotoba (> value max-fuel)
+     :clj (> value max-fuel)
      :cljs (> (i64/->bigint value) max-fuel)))
 
 (defn- fuel-budget! [fuel]
@@ -3602,7 +3616,8 @@
 ;; emission arms that are known to be word/externref-sensitive (the generic
 ;; `typed-cap-call`) refuse unrepresentable types by name on both hosts.
 (defn- self-validate! [module]
-  #?(:clj module
+  #?(:kotoba module
+     :clj module
      :cljs
      (do
        (when-not (some? (.-WebAssembly js/globalThis))
@@ -4109,7 +4124,8 @@
                         (section 6 global-sec)
                         (section 7 export-sec) (section 10 code-sec))]
       (self-validate!
-       #?(:clj (byte-array (map unchecked-byte bytes))
+       #?(:kotoba (vec bytes)
+          :clj (byte-array (map unchecked-byte bytes))
           :cljs (js/Uint8Array.from (clj->js (map #(bit-and % 0xff) bytes)))))))))
 
 (defn emit-component-core
