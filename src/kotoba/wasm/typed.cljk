@@ -8,37 +8,177 @@
   names are re-exported below so every caller of this namespace is unchanged;
   what moved is where they are defined, not what they mean."
   {:kotoba/export [abi-version boolean-result-ops bounded-map-descriptor bounded-map-option-descriptor bounded-map-wasm-entry-limit bytes-abi-version capability-contracts compact-graph-abi-version custom-section-name descriptor-indices descriptor-table descriptor? document-abi-version encode-descriptor hetero-item-type host-index infer-type keyword-text list-abi-version literal-indices literal-table lower-bounded-maps metadata-bytes primitive-tags reference-type? requires-host-runtime? scalar-adt-aliases schema-abi-version symbol-abi-version text-bytes uleb utf8 wasm-type]}
-  #?(:clj  (:require [kotoba.kir.descriptor :as descriptor])
+  #?(:kotoba (:require [kotoba.kir.descriptor :as descriptor]
+                        [kotoba.form :as form])
+     :clj  (:require [kotoba.kir.descriptor :as descriptor])
      :cljs (:require [kotoba.kir.descriptor :as descriptor]
                      [kotoba.kir.cljs-i64 :as i64])))
+
+
+#?(:kotoba
+   (defn- ty-kw [k :keyword] [:ref :form/r] (form/keyword-form k)))
+
+#?(:kotoba
+   (defn- ty-at [xs [:list [:ref :form/r]] i :i64] [:ref :form/r]
+     (if (and (>= i 0) (< i (vector-count xs)))
+       (typed-list-nth [:list [:ref :form/r]] xs i)
+       (form/nil-form))))
+
+#?(:kotoba
+   (defn- ty-fget [m [:ref :form/r] k :keyword] [:ref :form/r] (form/form-get m (form/keyword-form k))))
+
+#?(:kotoba
+   (defn- ty-truthy? [f [:ref :form/r]] :bool
+     (if (form/is-nil? f) false (if (form/is-bool? f) (form/bool-value f) true))))
+
+#?(:kotoba
+   (defn- ty-sym-name [f [:ref :form/r]] :string
+     (if (form/is-symbol? f) (form/symbol-value f) "")))
+
+#?(:kotoba
+   (defn- ty-sym-is? [f [:ref :form/r] name :string] :bool
+     (and (form/is-symbol? f) (string=? (form/symbol-value f) name))))
+
+;; NAMES is a space-delimited list with a leading and trailing space.
+#?(:kotoba
+   (defn- ty-name-in? [name :string names :string] :bool
+     (and (> (string-byte-length name) 0)
+          (string-contains? names (string-concat " " (string-concat name " "))))))
+
+#?(:kotoba
+   (defn- ty-kw-text [f [:ref :form/r]] :string
+     (document-edn-print (document-keyword (form/keyword-value f)))))
+
+#?(:kotoba
+   (defn- ty-is-kw? [f [:ref :form/r] k :keyword] :bool (form/eq f (ty-kw k))))
+
+#?(:kotoba
+   (defn- ty-has-form? [xs [:list [:ref :form/r]] x [:ref :form/r]] :bool
+     (let [n (vector-count xs)]
+       (loop [i 0]
+         (if (>= i n) false
+           (if (form/eq (typed-list-nth [:list [:ref :form/r]] xs i) x) true (recur (inc i))))))))
+
+#?(:kotoba
+   (defn- ty-insert-at [xs [:list [:ref :form/r]] p :i64 x [:ref :form/r]] [:list [:ref :form/r]]
+     (let [n (vector-count xs)]
+       (loop [i 0 acc (form/no-forms)]
+         (if (> i n)
+           acc
+           (recur (inc i)
+                  (let [with-x (if (= i p) (form/append-form acc x) acc)]
+                    (if (< i n) (form/append-form with-x (typed-list-nth [:list [:ref :form/r]] xs i)) with-x))))))))
+
+#?(:kotoba
+   (defn- ty-bytes-append [a :vector-i64 b :vector-i64] :vector-i64
+     (let [n (vector-count b)]
+       (loop [acc a i 0]
+         (if (>= i n) acc (recur (vector-conj acc (vector-at b i)) (inc i)))))))
+
+#?(:kotoba
+   (defn- ty-bad-bytes? [v :vector-i64] :bool
+     (and (> (vector-count v) 0) (= -1 (vector-at v 0)))))
+
 
 ;; Re-exported from kotoba.kir.descriptor. Vars rather than aliases so that
 ;; `kotoba.wasm.typed/encode-descriptor` keeps resolving for existing callers
 ;; in this repo and in the compiler.
-(def primitive-tags descriptor/primitive-tags)
-(def scalar-adt-aliases descriptor/scalar-adt-aliases)
-(def boolean-result-ops descriptor/boolean-result-ops)
-(def descriptor? descriptor/descriptor?)
-(def uleb descriptor/uleb)
-(def utf8 descriptor/utf8)
-(def text-bytes descriptor/text-bytes)
-(def keyword-text descriptor/keyword-text)
-(def encode-descriptor descriptor/encode-descriptor)
-(def descriptor-table descriptor/descriptor-table)
-(def descriptor-indices descriptor/descriptor-indices)
-(def capability-contracts descriptor/capability-contracts)
+#?(:kotoba
+   (defn primitive-tags [] [:ref :form/r] (descriptor/primitive-tags))
+   :default
+   (def primitive-tags descriptor/primitive-tags))
+#?(:kotoba
+   (defn scalar-adt-aliases [] [:ref :form/r] (descriptor/scalar-adt-aliases))
+   :default
+   (def scalar-adt-aliases descriptor/scalar-adt-aliases))
+#?(:kotoba
+   (defn boolean-result-ops [] [:ref :form/r] (descriptor/boolean-result-ops))
+   :default
+   (def boolean-result-ops descriptor/boolean-result-ops))
+#?(:kotoba
+   (defn descriptor? [value [:ref :form/r]] :bool (descriptor/descriptor? value))
+   :default
+   (def descriptor? descriptor/descriptor?))
+#?(:kotoba
+   (defn uleb [n :i64] :vector-i64 (descriptor/uleb n))
+   :default
+   (def uleb descriptor/uleb))
+#?(:kotoba
+   (defn utf8 [text :string] :vector-i64 (descriptor/utf8 text))
+   :default
+   (def utf8 descriptor/utf8))
+#?(:kotoba
+   (defn text-bytes [text :string] :vector-i64 (descriptor/text-bytes text))
+   :default
+   (def text-bytes descriptor/text-bytes))
+#?(:kotoba
+   (defn keyword-text [value :keyword] :string (descriptor/keyword-text value))
+   :default
+   (def keyword-text descriptor/keyword-text))
+#?(:kotoba
+   (defn encode-descriptor [descriptor [:ref :form/r]] :vector-i64
+     (let [r (descriptor/encode-descriptor descriptor)]
+       (if (result-ok?-of [:result :vector-i64 :document] r)
+         (result-value-of [:result :vector-i64 :document] r (vector-i64))
+         (do (throw (ex-info "unsupported typed descriptor" (result-error-of [:result :vector-i64 :document] r (document-null))))
+             (vector-i64)))))
+   :default
+   (def encode-descriptor descriptor/encode-descriptor))
+#?(:kotoba
+   (defn descriptor-table [kir [:ref :form/r]] [:ref :form/r] (descriptor/descriptor-table kir))
+   :default
+   (def descriptor-table descriptor/descriptor-table))
+#?(:kotoba
+   (defn descriptor-indices [kir [:ref :form/r]] [:ref :form/r] (descriptor/descriptor-indices kir))
+   :default
+   (def descriptor-indices descriptor/descriptor-indices))
+#?(:kotoba
+   (defn capability-contracts [kir [:ref :form/r]] [:ref :form/r]
+     (let [r (descriptor/capability-contracts kir)]
+       (if (result-ok?-of [:result [:ref :form/r] :document] r)
+         (result-value-of [:result [:ref :form/r] :document] r (form/nil-form))
+         (do (throw (ex-info "typed capability id has conflicting contracts" (result-error-of [:result [:ref :form/r] :document] r (document-null))))
+             (form/nil-form)))))
+   :default
+   (def capability-contracts descriptor/capability-contracts))
 
-(def abi-version 8)
-(def schema-abi-version 9)
-(def compact-graph-abi-version 10)
-(def document-abi-version 11)
-(def symbol-abi-version 12)
-(def list-abi-version 13)
-(def bytes-abi-version 14)
-(def custom-section-name "kotoba.typed")
+#?(:kotoba
+   (defn abi-version [] :i64 8)
+   :default
+   (def abi-version 8))
+#?(:kotoba
+   (defn schema-abi-version [] :i64 9)
+   :default
+   (def schema-abi-version 9))
+#?(:kotoba
+   (defn compact-graph-abi-version [] :i64 10)
+   :default
+   (def compact-graph-abi-version 10))
+#?(:kotoba
+   (defn document-abi-version [] :i64 11)
+   :default
+   (def document-abi-version 11))
+#?(:kotoba
+   (defn symbol-abi-version [] :i64 12)
+   :default
+   (def symbol-abi-version 12))
+#?(:kotoba
+   (defn list-abi-version [] :i64 13)
+   :default
+   (def list-abi-version 13))
+#?(:kotoba
+   (defn bytes-abi-version [] :i64 14)
+   :default
+   (def bytes-abi-version 14))
+#?(:kotoba
+   (defn custom-section-name [] :string "kotoba.typed")
+   :default
+   (def custom-section-name "kotoba.typed"))
 
 
-(declare literal-table reference-type?)
+#?(:kotoba nil
+   :default
+   (declare literal-table reference-type?))
 
 ;; --- the bounded `:map` value type ------------------------------------------
 ;;
@@ -71,417 +211,1063 @@
 ;; table, the literal table and the custom section see the module -- closes
 ;; both, and it does so by reusing machinery those two tables already carry
 ;; rather than by adding a third map representation to this backend.
-(def bounded-map-descriptor
-  "The bounded `:map` value type, written as the descriptor it already is."
-  [:map :keyword :i64])
+#?(:kotoba
+   (defn bounded-map-descriptor [] [:ref :form/r] (form/vec3 (ty-kw :map) (ty-kw :keyword) (ty-kw :i64)))
+   :default
+   (def bounded-map-descriptor
+     "The bounded `:map` value type, written as the descriptor it already is."
+     [:map :keyword :i64]))
 
-(def bounded-map-option-descriptor
-  "What `typed-map-get` answers for a `[:map :keyword :i64]`."
-  [:option :i64])
+#?(:kotoba
+   (defn bounded-map-option-descriptor [] [:ref :form/r] (form/vec2 (ty-kw :option) (ty-kw :i64)))
+   :default
+   (def bounded-map-option-descriptor
+     "What `typed-map-get` answers for a `[:map :keyword :i64]`."
+     [:option :i64]))
 
-(def bounded-map-wasm-entry-limit
-  "Entries a bounded map may hold once it is a typed map on this backend.
+#?(:kotoba
+   (defn bounded-map-wasm-entry-limit [] :i64 31)
+   :default
+   (def bounded-map-wasm-entry-limit
+     "Entries a bounded map may hold once it is a typed map on this backend.
+   
+     The typed value runtime rejects a 32nd entry (`typed map entry budget
+     exceeded`), while `kotoba.kir.value/map-entry-limit` admits 128 for the
+     bounded map on the KIR oracle. The two numbers are real and they differ, so
+     a literal over the smaller one is refused HERE, by name, at compile time --
+     rather than emitted into a module that traps when the entry is added. A
+     computed `map-assoc` can still cross it at runtime; that one the runtime
+     owns."
+     31))
 
-  The typed value runtime rejects a 32nd entry (`typed map entry budget
-  exceeded`), while `kotoba.kir.value/map-entry-limit` admits 128 for the
-  bounded map on the KIR oracle. The two numbers are real and they differ, so
-  a literal over the smaller one is refused HERE, by name, at compile time --
-  rather than emitted into a module that traps when the entry is added. A
-  computed `map-assoc` can still cross it at runtime; that one the runtime
-  owns."
-  31)
+#?(:kotoba nil
+   :default
+   (defn- bounded-map-call [op args form]
+     (case op
+       map-new
+       (do (when (> (quot (count args) 2) bounded-map-wasm-entry-limit)
+             (throw (ex-info "bounded map exceeds the typed map entry budget"
+                             {:phase :wasm-typed-lowering
+                              :entries (quot (count args) 2)
+                              :limit bounded-map-wasm-entry-limit
+                              :form form})))
+           (apply list 'typed-map-new bounded-map-descriptor args))
+       ;; `map-get`'s default is evaluated only when the key is absent, which is
+       ;; exactly `option-value-of`'s else branch -- so the laziness the KIR
+       ;; oracle gives it survives the rewrite instead of being restored by hand.
+       map-get
+       (let [[value key fallback] args]
+         (list 'option-value-of bounded-map-option-descriptor
+               (list 'typed-map-get bounded-map-descriptor value key)
+               fallback))
+       map-assoc
+       (reduce (fn [current [key item]]
+                 (list 'typed-map-assoc bounded-map-descriptor current key item))
+               (first args)
+               (partition 2 (rest args))))))
 
-(defn- bounded-map-call [op args form]
-  (case op
-    map-new
-    (do (when (> (quot (count args) 2) bounded-map-wasm-entry-limit)
-          (throw (ex-info "bounded map exceeds the typed map entry budget"
-                          {:phase :wasm-typed-lowering
-                           :entries (quot (count args) 2)
-                           :limit bounded-map-wasm-entry-limit
-                           :form form})))
-        (apply list 'typed-map-new bounded-map-descriptor args))
-    ;; `map-get`'s default is evaluated only when the key is absent, which is
-    ;; exactly `option-value-of`'s else branch -- so the laziness the KIR
-    ;; oracle gives it survives the rewrite instead of being restored by hand.
-    map-get
-    (let [[value key fallback] args]
-      (list 'option-value-of bounded-map-option-descriptor
-            (list 'typed-map-get bounded-map-descriptor value key)
-            fallback))
-    map-assoc
-    (reduce (fn [current [key item]]
-              (list 'typed-map-assoc bounded-map-descriptor current key item))
-            (first args)
-            (partition 2 (rest args)))))
+#?(:kotoba nil
+   :default
+   (defn- lower-bounded-map-form [form]
+     (cond
+       (and (seq? form) (seq form))
+       (let [op (first form)
+             args (mapv lower-bounded-map-form (rest form))]
+         (if (contains? '#{map-new map-get map-assoc} op)
+           (bounded-map-call op args form)
+           (apply list op args)))
+       ;; Descriptor vectors survive this unchanged (they hold only keywords and
+       ;; nested descriptors), and `let` binding vectors need walking, so both go
+       ;; through the same branch.
+       (vector? form) (mapv lower-bounded-map-form form)
+       :else form)))
 
-(defn- lower-bounded-map-form [form]
-  (cond
-    (and (seq? form) (seq form))
-    (let [op (first form)
-          args (mapv lower-bounded-map-form (rest form))]
-      (if (contains? '#{map-new map-get map-assoc} op)
-        (bounded-map-call op args form)
-        (apply list op args)))
-    ;; Descriptor vectors survive this unchanged (they hold only keywords and
-    ;; nested descriptors), and `let` binding vectors need walking, so both go
-    ;; through the same branch.
-    (vector? form) (mapv lower-bounded-map-form form)
-    :else form))
+#?(:kotoba nil
+   :default
+   (defn- lower-bounded-map-type [type]
+     (if (= :map type) bounded-map-descriptor type)))
 
-(defn- lower-bounded-map-type [type]
-  (if (= :map type) bounded-map-descriptor type))
+#?(:kotoba
+   (defn- ty-map-op-name? [f [:ref :form/r]] :bool
+     (and (form/is-symbol? f) (ty-name-in? (form/symbol-value f) " map-new map-get map-assoc "))))
 
-(defn lower-bounded-maps
-  "Rewrite the bounded map onto the canonical typed map, everywhere in KIR.
+#?(:kotoba
+   (defn- ty-kids-over-limit? [kids [:list [:ref :form/r]] start :i64] :bool
+     (let [n (vector-count kids)]
+       (loop [i start]
+         (if (>= i n) false
+           (if (ty-over-limit? (typed-list-nth [:list [:ref :form/r]] kids i)) true (recur (inc i))))))))
 
-  Idempotent: a module with no bounded map is returned structurally equal to
-  its input, so applying this twice -- `requires-host-runtime?` and `emit` each
-  apply it, because each is reached independently -- is the same as applying
-  it once."
-  [kir]
-  (-> kir
-      (update :functions
-              (fn [functions]
-                (mapv (fn [function]
-                        (cond-> (update function :body lower-bounded-map-form)
-                          (:param-types function)
-                          (update :param-types #(mapv lower-bounded-map-type %))
-                          (:result function)
-                          (update :result lower-bounded-map-type)))
-                      functions)))
-      (cond->
-       (:signature kir)
-       (update :signature
-               (fn [signature]
-                 (cond-> signature
-                   (:params signature) (update :params #(mapv lower-bounded-map-type %))
-                   (:result signature) (update :result lower-bounded-map-type)))))))
+#?(:kotoba
+   (defn- ty-over-limit? [f [:ref :form/r]] :bool
+     (cond
+       (and (form/is-seq? f) (> (form/count-of f) 0))
+       (or (and (ty-sym-is? (form/first-of f) "map-new")
+                (> (quot (- (form/count-of f) 1) 2) (bounded-map-wasm-entry-limit)))
+           (ty-kids-over-limit? (form/kids-of f) 1))
+       (form/is-vec? f) (ty-kids-over-limit? (form/kids-of f) 0)
+       :else false)))
+
+#?(:kotoba
+   (defn- ty-assoc-chain [args [:list [:ref :form/r]] i :i64 current [:ref :form/r]] [:ref :form/r]
+     (let [n (vector-count args)]
+       (loop [j i cur current]
+         (if (>= (+ j 1) n)
+           cur
+           (recur (+ j 2)
+                  (form/call4 "typed-map-assoc" (bounded-map-descriptor) cur (ty-at args j) (ty-at args (+ j 1)))))))))
+
+#?(:kotoba
+   (defn- ty-bounded-map-call [o :string args [:list [:ref :form/r]]] [:ref :form/r]
+     (cond
+       (string=? o "map-new")
+       (form/form-seq (form/cons-onto (form/symbol-form "typed-map-new")
+                                      (form/cons-onto (bounded-map-descriptor) args)))
+       (string=? o "map-get")
+       (form/call3 "option-value-of" (bounded-map-option-descriptor)
+                   (form/call3 "typed-map-get" (bounded-map-descriptor) (ty-at args 0) (ty-at args 1))
+                   (ty-at args 2))
+       :else (ty-assoc-chain args 1 (ty-at args 0)))))
+
+#?(:kotoba
+   (defn- ty-lower-each [kids [:list [:ref :form/r]] start :i64] [:list [:ref :form/r]]
+     (let [n (vector-count kids)]
+       (loop [i start acc (form/no-forms)]
+         (if (>= i n) acc
+           (recur (inc i) (form/append-form acc (ty-lower-bounded-map-form (typed-list-nth [:list [:ref :form/r]] kids i)))))))))
+
+#?(:kotoba
+   (defn- ty-lower-bounded-map-form [f [:ref :form/r]] [:ref :form/r]
+     (cond
+       (and (form/is-seq? f) (> (form/count-of f) 0))
+       (let [op (form/first-of f)
+             args (ty-lower-each (form/kids-of f) 1)]
+         (if (ty-map-op-name? op)
+           (ty-bounded-map-call (form/symbol-value op) args)
+           (form/form-seq (form/cons-onto op args))))
+       (form/is-vec? f) (form/form-vec (ty-lower-each (form/kids-of f) 0))
+       :else f)))
+
+#?(:kotoba
+   (defn- ty-lower-bounded-map-type [type [:ref :form/r]] [:ref :form/r]
+     (if (form/eq type (ty-kw :map)) (bounded-map-descriptor) type)))
+
+#?(:kotoba
+   (defn- ty-lower-type-list [kids [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (let [n (vector-count kids)]
+       (loop [i 0 acc (form/no-forms)]
+         (if (>= i n) acc
+           (recur (inc i) (form/append-form acc (ty-lower-bounded-map-type (typed-list-nth [:list [:ref :form/r]] kids i)))))))))
+
+#?(:kotoba
+   (defn- ty-lower-types [xs [:ref :form/r]] [:ref :form/r]
+     (form/form-vec (ty-lower-type-list (form/kids-of xs)))))
+
+#?(:kotoba
+   (defn- ty-lower-function [function [:ref :form/r]] [:ref :form/r]
+     (let [f1 (form/assoc-form function (ty-kw :body) (ty-lower-bounded-map-form (ty-fget function :body)))
+           f2 (if (ty-truthy? (ty-fget function :param-types))
+                (form/assoc-form f1 (ty-kw :param-types) (ty-lower-types (ty-fget function :param-types)))
+                f1)]
+       (if (ty-truthy? (ty-fget function :result))
+         (form/assoc-form f2 (ty-kw :result) (ty-lower-bounded-map-type (ty-fget function :result)))
+         f2))))
+
+#?(:kotoba
+   (defn- ty-lower-signature [signature [:ref :form/r]] [:ref :form/r]
+     (let [s1 (if (ty-truthy? (ty-fget signature :params))
+                (form/assoc-form signature (ty-kw :params) (ty-lower-types (ty-fget signature :params)))
+                signature)]
+       (if (ty-truthy? (ty-fget signature :result))
+         (form/assoc-form s1 (ty-kw :result) (ty-lower-bounded-map-type (ty-fget signature :result)))
+         s1))))
+
+#?(:kotoba
+   (defn- ty-any-function-over-limit? [fns [:list [:ref :form/r]]] :bool
+     (let [n (vector-count fns)]
+       (loop [i 0]
+         (if (>= i n) false
+           (if (ty-over-limit? (ty-fget (typed-list-nth [:list [:ref :form/r]] fns i) :body)) true (recur (inc i))))))))
+
+#?(:kotoba
+   (defn- ty-lower-function-list [fns [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (let [n (vector-count fns)]
+       (loop [i 0 acc (form/no-forms)]
+         (if (>= i n) acc
+           (recur (inc i) (form/append-form acc (ty-lower-function (typed-list-nth [:list [:ref :form/r]] fns i)))))))))
+
+#?(:kotoba
+   (defn- ty-lower-functions [fns [:list [:ref :form/r]]] [:ref :form/r]
+     (form/form-vec (ty-lower-function-list fns))))
+
+#?(:kotoba
+   (defn- ty-lower-kir [kir [:ref :form/r]] [:ref :form/r]
+     (let [k1 (form/assoc-form kir (ty-kw :functions) (ty-lower-functions (form/kids-of (ty-fget kir :functions))))]
+       (if (ty-truthy? (ty-fget kir :signature))
+         (form/assoc-form k1 (ty-kw :signature) (ty-lower-signature (ty-fget kir :signature)))
+         k1))))
+
+#?(:kotoba
+   (defn lower-bounded-maps [kir [:ref :form/r]] [:ref :form/r]
+     (if (ty-any-function-over-limit? (form/kids-of (ty-fget kir :functions)))
+       (do (throw (ex-info "bounded map exceeds the typed map entry budget"
+                           {:phase :wasm-typed-lowering}))
+           kir)
+       (ty-lower-kir kir))))
+
+#?(:kotoba nil
+   :default
+   (defn lower-bounded-maps
+     "Rewrite the bounded map onto the canonical typed map, everywhere in KIR.
+   
+     Idempotent: a module with no bounded map is returned structurally equal to
+     its input, so applying this twice -- `requires-host-runtime?` and `emit` each
+     apply it, because each is reached independently -- is the same as applying
+     it once."
+     [kir]
+     (-> kir
+         (update :functions
+                 (fn [functions]
+                   (mapv (fn [function]
+                           (cond-> (update function :body lower-bounded-map-form)
+                             (:param-types function)
+                             (update :param-types #(mapv lower-bounded-map-type %))
+                             (:result function)
+                             (update :result lower-bounded-map-type)))
+                         functions)))
+         (cond->
+          (:signature kir)
+          (update :signature
+                  (fn [signature]
+                    (cond-> signature
+                      (:params signature) (update :params #(mapv lower-bounded-map-type %))
+                      (:result signature) (update :result lower-bounded-map-type))))))))
 
 
-(defn requires-host-runtime?
-  ([kir] (requires-host-runtime? kir {}))
-  ([kir {:keys [native-bool?]}]
-   ;; i64, f32, and f64 are native Wasm scalars. Canonical Component adapters
-   ;; may additionally opt into bool=i32; ordinary KIR v4 deliberately keeps
-   ;; bool as a sealed externref.
-   ;; The bounded map is rewritten before the question is asked. An empty
-   ;; `(map-new)` carries no keyword literal and no descriptor of its own, so
-   ;; asking the raw KIR would answer "no host value" for a module that, once
-   ;; emitted, imports `kotoba:typed` -- the module would then declare no
-   ;; reference-types feature for imports it actually has.
-   (let [kir (lower-bounded-maps kir)
-         native-types (cond-> #{:i64 :f32 :f64} native-bool? (conj :bool))
-         signature-types (mapcat (fn [{:keys [param-types result]}]
-                                   (conj (vec param-types) result))
-                                 (:functions kir))
-         ;; `descriptor-table` walks the sealed KIR map and therefore also
-         ;; observes the map's own keyword-valued metadata as `:keyword`.
-         ;; Actual guest keyword literals are independently present in the
-         ;; body-only literal table, so discard only that metadata artefact.
-         body-descriptors (disj (set (descriptor-table kir)) :keyword)
-         literals (if native-bool?
-                    (remove #(= :bool (first %)) (literal-table kir))
-                    (literal-table kir))]
-     (or (some #(not (contains? native-types %)) signature-types)
-         (some #(not (contains? native-types %)) body-descriptors)
-         (seq literals)))))
+#?(:kotoba
+   (defn- ty-native-type? [t [:ref :form/r] nb :bool] :bool
+     (or (form/eq t (ty-kw :i64)) (form/eq t (ty-kw :f32)) (form/eq t (ty-kw :f64))
+         (and nb (form/eq t (ty-kw :bool))))))
 
-(defn- literal-walk [form found]
-  (cond
-    ;; `typed-cap-call`'s two TYPE positions are syntax, not values: they are
-    ;; the sealed capability contract `capability-contracts` above reads, and
-    ;; the guest never computes with them. Every other bare keyword stays a
-    ;; literal (a scalar type keyword such as `:bool` is also a perfectly good
-    ;; executable keyword value), so this is a positional exception, not a
-    ;; blanket "keywords in call position are syntax" rule.
-    ;;
-    ;; Counting them made `requires-host-runtime?` true for a program whose
-    ;; every value is a scalar, so the emitted component core module imported
-    ;; the `kotoba:typed` intrinsics -- imports that no WIT interface binds.
-    ;; `wasm-tools component new` then rejected the module with `failed to
-    ;; resolve import kotoba:typed::literal`, which made every source-level
-    ;; `(typed-cap-call <id> :i64 :i64 x)` unrepresentable as a Component even
-    ;; though ADR 0076 increment 1's `:scalar-with-capabilities` lowering
-    ;; exists precisely to admit it. The four hand-written capability shapes
-    ;; never hit this because they emit WAT directly instead of going through
-    ;; `emit-component-core`.
-    (and (seq? form) (= 'typed-cap-call (first form)) (= 5 (count form)))
-    (literal-walk (nth form 4) (literal-walk (nth form 1) found))
-    ;; Scalar type keywords (for example :bool) are also valid executable
-    ;; keyword literals. Only structured vector descriptors are syntax-only.
-    (and (vector? form) (descriptor? form)) found
-    (string? form) (conj found [:string form])
-    (keyword? form) (conj found [:keyword (str form)])
-    (boolean? form) (conj found [:bool form])
-    (coll? form) (reduce (fn [result item] (literal-walk item result)) found form)
-    :else found))
+#?(:kotoba
+   (defn- ty-any-nonnative? [tys [:list [:ref :form/r]] nb :bool] :bool
+     (let [n (vector-count tys)]
+       (loop [i 0]
+         (if (>= i n) false
+           (if (ty-native-type? (typed-list-nth [:list [:ref :form/r]] tys i) nb) (recur (inc i)) true))))))
 
-(defn literal-table [kir]
-  (->> (:functions kir)
-       (reduce (fn [found function]
-                 (literal-walk (:body function) found)) #{})
-       (sort-by pr-str)
-       vec))
+#?(:kotoba
+   (defn- ty-any-function-nonnative? [fns [:list [:ref :form/r]] nb :bool] :bool
+     (let [n (vector-count fns)]
+       (loop [i 0]
+         (if (>= i n) false
+           (let [f (typed-list-nth [:list [:ref :form/r]] fns i)]
+             (if (or (ty-any-nonnative? (form/kids-of (ty-fget f :param-types)) nb)
+                     (not (ty-native-type? (ty-fget f :result) nb)))
+               true
+               (recur (inc i)))))))))
 
-(defn literal-indices [kir]
-  (into {} (map-indexed (fn [index literal] [literal index]) (literal-table kir))))
+#?(:kotoba
+   (defn- ty-any-body-nonnative? [ds [:list [:ref :form/r]] nb :bool] :bool
+     (let [n (vector-count ds)]
+       (loop [i 0]
+         (if (>= i n) false
+           (let [d (typed-list-nth [:list [:ref :form/r]] ds i)]
+             (if (or (form/eq d (ty-kw :keyword)) (ty-native-type? d nb)) (recur (inc i)) true)))))))
 
-(defn- encode-literal [[kind value]]
-  (case kind
-    :string (into [0] (text-bytes value))
-    :keyword (into [1] (text-bytes value))
-    :bool [(if value 3 2)]
-    (throw (ex-info "unsupported Wasm typed literal"
-                    {:phase :wasm-typed-metadata :literal [kind value]}))))
+#?(:kotoba
+   (defn- ty-any-nonbool-literal? [ls [:list [:ref :form/r]]] :bool
+     (let [n (vector-count ls)]
+       (loop [i 0]
+         (if (>= i n) false
+           (if (form/eq (form/first-of (typed-list-nth [:list [:ref :form/r]] ls i)) (ty-kw :bool)) (recur (inc i)) true))))))
 
-(defn metadata-bytes [kir]
-  (let [descriptors (descriptor-table kir)
-        literals (literal-table kir)
-        schemas (:schemas kir)
-        identities (:schema-identities kir)
-        contracts (capability-contracts kir)
-        document? (some #(= :document %) descriptors)
-        symbol? (some #(= :symbol %) descriptors)
-        list? (some #(and (vector? %) (= :list (first %))) descriptors)
-        bytes? (some #(= :bytes %) descriptors)
-        compact-graph?
-        (some #(or (= :string-index %) (= :disjoint-set-i64 %)) descriptors)
-        schema? (or (seq schemas) (seq contracts))
-        extended-schema? (or schema? compact-graph? document? symbol? list? bytes?)
-        indices (descriptor-indices kir)]
-    (vec (concat [(cond bytes? bytes-abi-version
-                        list? list-abi-version
-                        symbol? symbol-abi-version
-                        document? document-abi-version
-                        compact-graph? compact-graph-abi-version
-                        schema? schema-abi-version
-                        :else abi-version)]
-                 (uleb (count descriptors))
-                 (mapcat encode-descriptor descriptors)
-                 (uleb (count literals))
-                 (mapcat encode-literal literals)
-                 (when extended-schema?
-                   (concat
-                    (uleb (count schemas))
-                    (mapcat (fn [[schema-name descriptor]]
-                              (concat (text-bytes (keyword-text schema-name))
-                                      (text-bytes (get identities schema-name))
-                                      (encode-descriptor descriptor)))
-                            (sort-by (comp str key) schemas))
-                    (uleb (count contracts))
-                    (mapcat (fn [{:keys [id request-type result-type]}]
-                              (concat (uleb id)
-                                      (uleb (get indices request-type))
-                                      (uleb (get indices result-type))))
-                            contracts)))))))
+#?(:kotoba
+   (defn requires-host-runtime? [kir0 [:ref :form/r] opts [:ref :form/r]] :bool
+     (let [kir (lower-bounded-maps kir0)
+           nb (ty-truthy? (ty-fget opts :native-bool?))
+           fns (form/kids-of (ty-fget kir :functions))
+           ds (form/kids-of (descriptor-table kir))
+           ls (form/kids-of (literal-table kir))]
+       (or (ty-any-function-nonnative? fns nb)
+           (ty-any-body-nonnative? ds nb)
+           (if nb (ty-any-nonbool-literal? ls) (> (vector-count ls) 0))))))
 
-(defn reference-type? [type]
-  ;; Profile-5 :bool is a 0/1 i64 word inside modules, not a sealed ref.
-  (not (contains? #{:i64 :f32 :f64 :bool} type)))
+#?(:kotoba nil
+   :default
+   (defn requires-host-runtime?
+     ([kir] (requires-host-runtime? kir {}))
+     ([kir {:keys [native-bool?]}]
+      ;; i64, f32, and f64 are native Wasm scalars. Canonical Component adapters
+      ;; may additionally opt into bool=i32; ordinary KIR v4 deliberately keeps
+      ;; bool as a sealed externref.
+      ;; The bounded map is rewritten before the question is asked. An empty
+      ;; `(map-new)` carries no keyword literal and no descriptor of its own, so
+      ;; asking the raw KIR would answer "no host value" for a module that, once
+      ;; emitted, imports `kotoba:typed` -- the module would then declare no
+      ;; reference-types feature for imports it actually has.
+      (let [kir (lower-bounded-maps kir)
+            native-types (cond-> #{:i64 :f32 :f64} native-bool? (conj :bool))
+            signature-types (mapcat (fn [{:keys [param-types result]}]
+                                      (conj (vec param-types) result))
+                                    (:functions kir))
+            ;; `descriptor-table` walks the sealed KIR map and therefore also
+            ;; observes the map's own keyword-valued metadata as `:keyword`.
+            ;; Actual guest keyword literals are independently present in the
+            ;; body-only literal table, so discard only that metadata artefact.
+            body-descriptors (disj (set (descriptor-table kir)) :keyword)
+            literals (if native-bool?
+                       (remove #(= :bool (first %)) (literal-table kir))
+                       (literal-table kir))]
+        (or (some #(not (contains? native-types %)) signature-types)
+            (some #(not (contains? native-types %)) body-descriptors)
+            (seq literals))))))
 
-(defn wasm-type [type]
-  ;; :bool is the 0/1 i64 word. Export ABI boxing to host boolean is the
-  ;; emitter's job at function boundaries, not a different local type.
-  (case type :i64 0x7e :f32 0x7d :f64 0x7c :bool 0x7e 0x6f))
+#?(:kotoba nil
+   :default
+   (defn- literal-walk [form found]
+     (cond
+       ;; `typed-cap-call`'s two TYPE positions are syntax, not values: they are
+       ;; the sealed capability contract `capability-contracts` above reads, and
+       ;; the guest never computes with them. Every other bare keyword stays a
+       ;; literal (a scalar type keyword such as `:bool` is also a perfectly good
+       ;; executable keyword value), so this is a positional exception, not a
+       ;; blanket "keywords in call position are syntax" rule.
+       ;;
+       ;; Counting them made `requires-host-runtime?` true for a program whose
+       ;; every value is a scalar, so the emitted component core module imported
+       ;; the `kotoba:typed` intrinsics -- imports that no WIT interface binds.
+       ;; `wasm-tools component new` then rejected the module with `failed to
+       ;; resolve import kotoba:typed::literal`, which made every source-level
+       ;; `(typed-cap-call <id> :i64 :i64 x)` unrepresentable as a Component even
+       ;; though ADR 0076 increment 1's `:scalar-with-capabilities` lowering
+       ;; exists precisely to admit it. The four hand-written capability shapes
+       ;; never hit this because they emit WAT directly instead of going through
+       ;; `emit-component-core`.
+       (and (seq? form) (= 'typed-cap-call (first form)) (= 5 (count form)))
+       (literal-walk (nth form 4) (literal-walk (nth form 1) found))
+       ;; Scalar type keywords (for example :bool) are also valid executable
+       ;; keyword literals. Only structured vector descriptors are syntax-only.
+       (and (vector? form) (descriptor? form)) found
+       (string? form) (conj found [:string form])
+       (keyword? form) (conj found [:keyword (str form)])
+       (boolean? form) (conj found [:bool form])
+       (coll? form) (reduce (fn [result item] (literal-walk item result)) found form)
+       :else found)))
 
-(defn host-index
-  "A STRUCTURAL position inside a heterogeneous value, as a host integer.
+#?(:kotoba
+   (defn- ty-add-lit [found [:list [:ref :form/r]] lit [:ref :form/r]] [:list [:ref :form/r]]
+     (if (ty-has-form? found lit) found (form/append-form found lit))))
 
-  KIR carries such a position as an ordinary i64 literal, and an i64 literal
-  is a `Long` on the JVM but a JavaScript `BigInt` under cljs/nbb. `nth`
-  accepts only a host number, so every emitter site that uses the position to
-  select a MEMBER TYPE has to convert first; on the JVM the conversion is a
-  no-op, which is why a JVM-only test cannot see the difference. The KIR
-  reference interpreter performs the same conversion for the same operations
-  (`kotoba.kir`'s `hetero-vector-at`/`hetero-vector-assoc`); this is that
-  conversion for the Wasm backend.
+#?(:kotoba
+   (defn- ty-lit-walk-items [kids [:list [:ref :form/r]] found [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (let [n (vector-count kids)]
+       (loop [i 0 acc found]
+         (if (>= i n) acc
+           (recur (inc i) (ty-lit-walk (typed-list-nth [:list [:ref :form/r]] kids i) acc)))))))
 
-  Refuses anything that is not an integer literal with a named phase rather
-  than letting `nth` raise a host-level error the CLI can only report as an
-  internal compiler error."
-  [index form]
-  (let [n #?(:clj (when (integer? index) (long index))
-             :cljs (cond (i64/bigint-value? index) (js/Number index)
-                         (integer? index) index
-                         :else nil))]
-    (when-not (nat-int? n)
-      (throw (ex-info "heterogeneous position must be a non-negative integer literal"
-                      {:phase :wasm-typed-lowering :index index :form form})))
-    n))
+#?(:kotoba
+   (defn- ty-lit-walk-pairs [kids [:list [:ref :form/r]] found [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (let [n (vector-count kids)]
+       (loop [j 0 acc found]
+         (if (>= (+ j 1) n) acc
+           (recur (+ j 2) (ty-lit-walk (form/vec2 (ty-at kids j) (ty-at kids (+ j 1))) acc)))))))
 
-(defn hetero-item-type
-  "The member type at a structural position of `[:vector [t0 t1 ...]]`."
-  [type index form]
-  (let [items (second type)
-        position (host-index index form)]
-    (when-not (< position (count items))
-      (throw (ex-info "heterogeneous position is out of range"
-                      {:phase :wasm-typed-lowering :index position
-                       :arity (count items) :form form})))
-    (nth items position)))
+#?(:kotoba
+   (defn- ty-lit-walk [f [:ref :form/r] found [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (cond
+       (and (form/is-seq? f) (= 5 (form/count-of f)) (ty-sym-is? (form/first-of f) "typed-cap-call"))
+       (ty-lit-walk (form/nth-of f 4) (ty-lit-walk (form/nth-of f 1) found))
+       (and (form/is-vec? f) (descriptor? f)) found
+       (form/is-string? f) (ty-add-lit found (form/vec2 (ty-kw :string) f))
+       (form/is-keyword? f) (ty-add-lit found (form/vec2 (ty-kw :keyword) (form/string-form (ty-kw-text f))))
+       (form/is-bool? f) (ty-add-lit found (form/vec2 (ty-kw :bool) f))
+       (form/is-map? f) (ty-lit-walk-pairs (form/kids-of f) found)
+       (or (form/is-seq? f) (form/is-vec? f) (form/is-set? f)) (ty-lit-walk-items (form/kids-of f) found)
+       :else found)))
 
-(declare infer-type)
+#?(:kotoba
+   (defn- ty-lit-print [lit [:ref :form/r]] :string
+     (let [v (form/nth-of lit 1)]
+       (string-concat
+        (string-concat "[" (string-concat (ty-kw-text (form/nth-of lit 0)) " "))
+        (string-concat
+         (if (form/is-string? v)
+           (document-edn-print (document-string (form/string-value v)))
+           (if (form/is-bool? v) (if (form/bool-value v) "true" "false") "nil"))
+         "]")))))
 
-(defn infer-type [form env signatures]
-  (cond
-    #?(:clj (integer? form) :cljs (or (i64/bigint-value? form) (integer? form))) :i64
-    #?(:clj (instance? Float form) :cljs false) :f32
-    #?(:clj (instance? Double form) :cljs (number? form)) :f64
-    (string? form) :string
-    (keyword? form) :keyword
-    (boolean? form) :bool
-    (symbol? form) (or (get env form)
-                       (throw (ex-info "unbound typed Wasm symbol"
-                                       {:phase :wasm-typed-lowering :symbol form})))
-    :else
-    (let [[op & args] form]
-      (cond
-        (= op 'let)
-        (let [[bindings body] args
-              env' (reduce (fn [current [name value]]
-                             (assoc current name (infer-type value current signatures)))
-                           env (partition 2 bindings))]
-          (infer-type body env' signatures))
-        (= op 'if) (infer-type (second args) env signatures)
-        (= op 'do) (infer-type (last args) env signatures)
-        (= op 'typed-cap-call) (nth args 2)
-        (= op 'component-assert-bool) :bool
-        (= op 'component-i64-to-i32) :bool
-        (= op 'component-i32-to-f32) :f32
-        (= op 'component-i64-to-f32) :f32
-        (= op 'component-i64-to-f64) :f64
-        (= op 'component-string-byte-length) :i64
-        (= op 'component-list-count) :i64
-        (= op 'component-list-at-i64) :i64
-        (= op 'component-list-at-f64) :f64
-        (= op 'component-list-get-i64) :i64
-        (= op 'component-list-get-f64) :f64
-        (= op 'component-option-list-capability-count) :i64
-        (= op 'component-result-list-capability-count) :i64
-        (contains?
-         '{component-option-record-capability-project-i64 :i64
-           component-option-record-capability-project-f32 :f32
-           component-option-record-capability-project-f64 :f64
-           component-option-record-capability-project-bool :bool}
-         op)
-        ('{component-option-record-capability-project-i64 :i64
-           component-option-record-capability-project-f32 :f32
-           component-option-record-capability-project-f64 :f64
-           component-option-record-capability-project-bool :bool}
-         op)
-        (contains? '#{+ - * quot bit-xor bit-and bit-or bit-not
-                             min max
-                             cap-call pair pair-first pair-second
-                      i32-wrap u32-wrap i32-wrapping-add i32-wrapping-mul i32-xor
-                      i32-shift-left i32-shift-right u32-shift-right xorshift32
-                      i64-shift-left i64-shift-right u64-shift-right
-                      i64-extend-i32-u
-                      string-byte-length string-code-point-at map-get vector-count vector-get vector-f64-count
-                      vector-at hetero-vector-count typed-set-count
-                      typed-map-count xml-path-count xml-name-count string-index-count
-                      disjoint-set-i64-count document-count} op) :i64
-        (= op 'f64-to-bits) :i64
-        (= op 'f64-from-bits) :f64
-        (contains? '#{i64-to-f64-checked i64-to-f64-rounded} op) :f64
-        (contains? '#{f64-to-i64-checked f64-to-i64-truncating} op) :i64
-        (contains? '#{f64-add f64-sub f64-mul f64-div f64-min f64-max f64-neg f64-abs f64-sqrt
-                      f64-sin-quarter-turn f64-cos-quarter-turn
-                      f64-sin-bounded f64-cos-bounded
-                      f64-exp-near-zero f64-log-near-one f64-atan2-bounded
-                      f64-exp-bounded f64-log-bounded} op) :f64
-        (contains? '#{f64-eq f64-lt f64-le f64-gt f64-ge f64-unordered} op) :bool
-        (= op 'f32-to-bits) :i64
-        (= op 'f32-from-bits) :f32
-        (= op 'f64-to-f32-rounded) :f32
-        (= op 'f32-to-f64-exact) :f64
-        (contains? '#{i64-to-f32-checked i64-to-f32-rounded} op) :f32
-        (contains? '#{f32-to-i64-checked f32-to-i64-truncating} op) :i64
-        (contains? '#{f32-add f32-sub f32-mul f32-div f32-min f32-max f32-neg f32-abs f32-sqrt} op) :f32
-        (contains? '#{f32-eq f32-lt f32-le f32-gt f32-ge f32-unordered} op) :bool
-        (contains? '#{= < > <= >= hetero-vector-equal typed-set-equal
-                      typed-map-equal record-equal} op) :i64
-        (= op 'string=?) :bool
-        (= op 'string-contains?) :bool
-        (= op 'string-split-count) :i64
-        (contains? '#{string-index-of bytes-count bytes-at} op) :i64
-        (contains? '#{bytes-slice bytes-concat} op) :bytes
-        ;; 2026-09-25 (superproject adr-2609242330): the bytes constructor,
-        ;; its inverse and the string constructor -- host intrinsics like the
-        ;; four reads above.
-        (= op 'bytes-from-vector-i64) :bytes
-        (= op 'vector-i64-from-bytes) :vector-i64
-        (= op 'string-from-utf8) :string
-        (contains? '#{bool-not option-some? result-ok?
-                      result-ok?-of option-some?-of typed-set-contains
-                      typed-map-contains string-index-contains} op) :bool
-        (contains? '#{document-contains document-equal? document-set-contains?} op) :bool
-        (contains? '#{string-concat string-substring string-replace-all string-fold-case string-upper keyword-name} op) :string
-        (contains? '#{keyword-from-string document-kind} op) :keyword
-        (= op 'symbol) :symbol
-        (contains? '#{xml-name-text xml-path-text xml-path-attr} op) [:option :string]
-        (= op 'decimal-f64-parse) [:option :f64]
-        (= op 'decimal-f64x3-parse) [:option [:vector [:f64 :f64 :f64]]]
-        (= op 'vector-new) :vector-i64
-        (= op 'bytes-empty) :bytes
-        (= op 'vector-f64-new) :vector-f64
-        (= op 'string-index-new) :string-index
-        (= op 'string-index-get) [:option :i64]
-        (= op 'string-index-assoc) :string-index
-        (= op 'disjoint-set-i64-new) :disjoint-set-i64
-        (= op 'disjoint-set-i64-union) [:option :disjoint-set-i64]
-        (contains? '#{document-null document-bool document-i64 document-f64
-                      document-string document-keyword document-symbol document-vector document-list document-set document-map
-                      document-vector-assoc document-vector-conj document-vector-drop
-                      document-vector-remove document-vector-sort document-map-entry-at
-                      document-assoc document-dissoc document-merge} op) :document
-        (contains? '#{document-get document-vector-at document-list-at document-map-entry-at} op) [:option :document]
-        (= op 'document-sha256) :string
-        (= op 'document-print) :string
-        (= op 'document-read) :document
-        (= op 'document-edn-print) :string
-        (= op 'document-edn-read) :document
-        (= op 'document-string-value) [:option :string]
-        (= op 'document-keyword-value) [:option :keyword]
-        (= op 'document-symbol-value) [:option :symbol]
-        (= op 'document-bool-value) [:option :bool]
-        (= op 'document-i64-value) [:option :i64]
-        (= op 'document-f64-value) [:option :f64]
-        (contains? '#{vector-f64-get vector-f64-at} op) :f64
-        (contains? '#{vector-f64-drop vector-f64-assoc vector-f64-conj} op) :vector-f64
-        (contains? '#{vector-drop vector-assoc vector-assoc! vector-conj vector-alloc} op) :vector-i64
-        (= op 'variant-new) (first args)
-        (contains? '#{option-some-of option-none-of result-ok-of result-err-of
-                      typed-list-new hetero-vector-new typed-set-new typed-map-new record-new} op) (first args)
-        (= op 'result-match-of)
-        (let [[type _ ok-name ok-body] args]
-          (infer-type ok-body (assoc env ok-name (second type)) signatures))
-        (= op 'variant-match)
-        (let [[type _ branches] args
-              [[_ binder body]] branches
-              payload-type (second (first (nth type 2)))]
-          (infer-type body (assoc env binder payload-type) signatures))
-        (= op 'option-match)
-        (let [[type _ _ some-name some-body] args]
-          (infer-type some-body (assoc env some-name (second type)) signatures))
-        (contains? '#{result-value-of result-error-of} op)
-        (if (= op 'result-value-of) (second (first args)) (nth (first args) 2))
-        (= op 'option-value-of) (second (first args))
-        (= op 'typed-map-get) [:option (nth (first args) 2)]
-        (= op 'typed-map-entry-at)
-        [:option [:vector [(second (first args)) (nth (first args) 2)]]]
-        ;; `typed-list-nth` is the list accessor sema has rewritten `nth` to
-        ;; since 2026-09-03; its result type is the item type, exactly as
-        ;; `typed-set-nth`'s is.
-        (contains? '#{typed-set-nth typed-list-nth} op) (second (first args))
-        (= op 'hetero-vector-at)
-        (hetero-item-type (first args) (nth args 2) form)
-        (= op 'record-get)
-        (let [[type _ field] args]
-          (second (some #(when (= field (first %)) %) (nth type 2))))
-        (contains? '#{hetero-vector-assoc typed-set-conj typed-set-disj
-                      typed-map-assoc typed-map-dissoc record-assoc} op)
-        (first args)
-        :else (or (:result (get signatures op))
-                  (throw (ex-info "unsupported typed Wasm expression"
-                                  {:phase :wasm-typed-lowering :operation op :form form})))))))
+#?(:kotoba
+   (defn- ty-lit-position [sorted [:list [:ref :form/r]] key :string] :i64
+     (let [n (vector-count sorted)]
+       (loop [i 0]
+         (if (or (>= i n) (> (string-compare (ty-lit-print (typed-list-nth [:list [:ref :form/r]] sorted i)) key) 0))
+           i
+           (recur (inc i)))))))
+
+#?(:kotoba
+   (defn- ty-sort-lits [xs [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (let [n (vector-count xs)]
+       (loop [i 0 sorted (form/no-forms)]
+         (if (>= i n) sorted
+           (let [x (typed-list-nth [:list [:ref :form/r]] xs i)]
+             (recur (inc i) (ty-insert-at sorted (ty-lit-position sorted (ty-lit-print x)) x))))))))
+
+#?(:kotoba
+   (defn- ty-collect-literals [fns [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (let [n (vector-count fns)]
+       (loop [i 0 acc (form/no-forms)]
+         (if (>= i n) acc
+           (recur (inc i) (ty-lit-walk (ty-fget (typed-list-nth [:list [:ref :form/r]] fns i) :body) acc)))))))
+
+#?(:kotoba
+   (defn literal-table [kir [:ref :form/r]] [:ref :form/r]
+     (form/form-vec (ty-sort-lits (ty-collect-literals (form/kids-of (ty-fget kir :functions)))))))
+
+#?(:kotoba
+   (defn- ty-index-literals [t [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (let [n (vector-count t)]
+       (loop [i 0 acc (form/no-forms)]
+         (if (>= i n) acc
+           (recur (inc i) (form/append-form (form/append-form acc (typed-list-nth [:list [:ref :form/r]] t i)) (form/int-form i))))))))
+
+#?(:kotoba
+   (defn literal-indices [kir [:ref :form/r]] [:ref :form/r]
+     (form/form-map (ty-index-literals (form/kids-of (literal-table kir))))))
+
+#?(:kotoba
+   (defn- ty-encode-literal [lit [:ref :form/r]] :vector-i64
+     (let [kind (form/nth-of lit 0)
+           v (form/nth-of lit 1)]
+       (cond
+         (form/eq kind (ty-kw :string)) (ty-bytes-append (vector-i64 0) (text-bytes (form/string-value v)))
+         (form/eq kind (ty-kw :keyword)) (ty-bytes-append (vector-i64 1) (text-bytes (form/string-value v)))
+         (form/eq kind (ty-kw :bool)) (vector-i64 (if (form/is-true? v) 3 2))
+         :else (vector-i64 -1)))))
+
+#?(:kotoba
+   (defn- ty-encode-literals [ls [:list [:ref :form/r]]] :vector-i64
+     (let [n (vector-count ls)]
+       (loop [i 0 out (vector-i64)]
+         (if (>= i n) out
+           (let [e (ty-encode-literal (typed-list-nth [:list [:ref :form/r]] ls i))]
+             (if (ty-bad-bytes? e) e (recur (inc i) (ty-bytes-append out e)))))))))
+
+#?(:kotoba nil
+   :default
+   (defn literal-table [kir]
+     (->> (:functions kir)
+          (reduce (fn [found function]
+                    (literal-walk (:body function) found)) #{})
+          (sort-by pr-str)
+          vec)))
+
+#?(:kotoba nil
+   :default
+   (defn literal-indices [kir]
+     (into {} (map-indexed (fn [index literal] [literal index]) (literal-table kir)))))
+
+#?(:kotoba nil
+   :default
+   (defn- encode-literal [[kind value]]
+     (case kind
+       :string (into [0] (text-bytes value))
+       :keyword (into [1] (text-bytes value))
+       :bool [(if value 3 2)]
+       (throw (ex-info "unsupported Wasm typed literal"
+                       {:phase :wasm-typed-metadata :literal [kind value]})))))
+
+#?(:kotoba
+   (defn- ty-any-kw? [ds [:list [:ref :form/r]] k :keyword] :bool
+     (let [n (vector-count ds)]
+       (loop [i 0]
+         (if (>= i n) false
+           (if (form/eq (typed-list-nth [:list [:ref :form/r]] ds i) (ty-kw k)) true (recur (inc i))))))))
+
+#?(:kotoba
+   (defn- ty-any-list-descriptor? [ds [:list [:ref :form/r]]] :bool
+     (let [n (vector-count ds)]
+       (loop [i 0]
+         (if (>= i n) false
+           (let [d (typed-list-nth [:list [:ref :form/r]] ds i)]
+             (if (and (form/is-vec? d) (form/eq (form/first-of d) (ty-kw :list))) true (recur (inc i)))))))))
+
+#?(:kotoba
+   (defn- ty-encode-descriptors [ds [:list [:ref :form/r]] i :i64 acc :vector-i64] :vector-i64
+     (if (>= i (vector-count ds))
+       acc
+       (ty-encode-descriptors ds (+ i 1) (ty-bytes-append acc (encode-descriptor (typed-list-nth [:list [:ref :form/r]] ds i)))))))
+
+#?(:kotoba
+   (defn- ty-key-text [k [:ref :form/r]] :string
+     (if (form/is-keyword? k) (ty-kw-text k) (if (form/is-symbol? k) (form/symbol-value k) ""))))
+
+#?(:kotoba
+   (defn- ty-entry-position [sorted [:list [:ref :form/r]] key :string] :i64
+     (let [n (vector-count sorted)]
+       (loop [i 0]
+         (if (or (>= i n) (> (string-compare (ty-key-text (form/nth-of (typed-list-nth [:list [:ref :form/r]] sorted i) 0)) key) 0))
+           i
+           (recur (inc i)))))))
+
+#?(:kotoba
+   (defn- ty-sorted-entries [m [:ref :form/r]] [:list [:ref :form/r]]
+     (let [kids (form/kids-of m)
+           n (vector-count kids)]
+       (loop [j 0 sorted (form/no-forms)]
+         (if (>= (+ j 1) n) sorted
+           (let [k (ty-at kids j)
+                 e (form/vec2 k (ty-at kids (+ j 1)))]
+             (recur (+ j 2) (ty-insert-at sorted (ty-entry-position sorted (ty-key-text k)) e))))))))
+
+#?(:kotoba
+   (defn- ty-encode-schemas [entries [:list [:ref :form/r]] i :i64 identities [:ref :form/r] acc :vector-i64] :vector-i64
+     (if (>= i (vector-count entries))
+       acc
+       (let [e (typed-list-nth [:list [:ref :form/r]] entries i)
+             k (form/nth-of e 0)]
+         (ty-encode-schemas entries (+ i 1) identities
+                         (ty-bytes-append
+                          (ty-bytes-append
+                           (ty-bytes-append acc (text-bytes (ty-key-text k)))
+                           (text-bytes (form/string-value (form/form-get identities k))))
+                          (encode-descriptor (form/nth-of e 1))))))))
+
+#?(:kotoba
+   (defn- ty-encode-contracts [cs [:list [:ref :form/r]] i :i64 indices [:ref :form/r] acc :vector-i64] :vector-i64
+     (if (>= i (vector-count cs))
+       acc
+       (let [c (typed-list-nth [:list [:ref :form/r]] cs i)]
+         (ty-encode-contracts cs (+ i 1) indices
+                           (ty-bytes-append
+                            (ty-bytes-append
+                             (ty-bytes-append acc (uleb (form/int-value (ty-fget c :id))))
+                             (uleb (form/int-value (form/form-get indices (ty-fget c :request-type)))))
+                            (uleb (form/int-value (form/form-get indices (ty-fget c :result-type))))))))))
+
+#?(:kotoba
+   (defn metadata-bytes [kir [:ref :form/r]] :vector-i64
+     (let [ds (form/kids-of (descriptor-table kir))
+           ls (form/kids-of (literal-table kir))
+           schemas (ty-fget kir :schemas)
+           identities (ty-fget kir :schema-identities)
+           cs (form/kids-of (capability-contracts kir))
+           document? (ty-any-kw? ds :document)
+           symbol? (ty-any-kw? ds :symbol)
+           list? (ty-any-list-descriptor? ds)
+           bytes? (ty-any-kw? ds :bytes)
+           compact-graph? (or (ty-any-kw? ds :string-index) (ty-any-kw? ds :disjoint-set-i64))
+           schema? (or (> (form/count-of schemas) 0) (> (vector-count cs) 0))
+           extended-schema? (or schema? compact-graph? document? symbol? list? bytes?)
+           indices (descriptor-indices kir)
+           version (cond bytes? (bytes-abi-version)
+                         list? (list-abi-version)
+                         symbol? (symbol-abi-version)
+                         document? (document-abi-version)
+                         compact-graph? (compact-graph-abi-version)
+                         schema? (schema-abi-version)
+                         :else (abi-version))
+           literal-bytes (ty-encode-literals ls)]
+       (if (ty-bad-bytes? literal-bytes)
+         (do (throw (ex-info "unsupported Wasm typed literal" {:phase :wasm-typed-metadata}))
+             literal-bytes)
+         (let [head (ty-bytes-append
+                     (ty-bytes-append
+                      (ty-bytes-append (ty-bytes-append (vector-i64 version) (uleb (vector-count ds)))
+                                    (ty-encode-descriptors ds 0 (vector-i64)))
+                      (uleb (vector-count ls)))
+                     literal-bytes)]
+           (if extended-schema?
+             (let [entries (ty-sorted-entries schemas)]
+               (ty-encode-contracts cs 0 indices
+                                 (ty-bytes-append
+                                  (ty-encode-schemas entries 0 identities
+                                                  (ty-bytes-append head (uleb (vector-count entries))))
+                                  (uleb (vector-count cs)))))
+             head))))))
+
+#?(:kotoba nil
+   :default
+   (defn metadata-bytes [kir]
+     (let [descriptors (descriptor-table kir)
+           literals (literal-table kir)
+           schemas (:schemas kir)
+           identities (:schema-identities kir)
+           contracts (capability-contracts kir)
+           document? (some #(= :document %) descriptors)
+           symbol? (some #(= :symbol %) descriptors)
+           list? (some #(and (vector? %) (= :list (first %))) descriptors)
+           bytes? (some #(= :bytes %) descriptors)
+           compact-graph?
+           (some #(or (= :string-index %) (= :disjoint-set-i64 %)) descriptors)
+           schema? (or (seq schemas) (seq contracts))
+           extended-schema? (or schema? compact-graph? document? symbol? list? bytes?)
+           indices (descriptor-indices kir)]
+       (vec (concat [(cond bytes? bytes-abi-version
+                           list? list-abi-version
+                           symbol? symbol-abi-version
+                           document? document-abi-version
+                           compact-graph? compact-graph-abi-version
+                           schema? schema-abi-version
+                           :else abi-version)]
+                    (uleb (count descriptors))
+                    (mapcat encode-descriptor descriptors)
+                    (uleb (count literals))
+                    (mapcat encode-literal literals)
+                    (when extended-schema?
+                      (concat
+                       (uleb (count schemas))
+                       (mapcat (fn [[schema-name descriptor]]
+                                 (concat (text-bytes (keyword-text schema-name))
+                                         (text-bytes (get identities schema-name))
+                                         (encode-descriptor descriptor)))
+                               (sort-by (comp str key) schemas))
+                       (uleb (count contracts))
+                       (mapcat (fn [{:keys [id request-type result-type]}]
+                                 (concat (uleb id)
+                                         (uleb (get indices request-type))
+                                         (uleb (get indices result-type))))
+                               contracts))))))))
+
+#?(:kotoba
+   (defn reference-type? [type [:ref :form/r]] :bool
+     (if (or (form/eq type (ty-kw :i64)) (form/eq type (ty-kw :f32)) (form/eq type (ty-kw :f64)) (form/eq type (ty-kw :bool)))
+       false
+       true))
+   :default
+   (defn reference-type? [type]
+     ;; Profile-5 :bool is a 0/1 i64 word inside modules, not a sealed ref.
+     (not (contains? #{:i64 :f32 :f64 :bool} type))))
+
+#?(:kotoba
+   (defn wasm-type [type [:ref :form/r]] :i64
+     (cond (form/eq type (ty-kw :i64)) 126
+           (form/eq type (ty-kw :f32)) 125
+           (form/eq type (ty-kw :f64)) 124
+           (form/eq type (ty-kw :bool)) 126
+           :else 111))
+   :default
+   (defn wasm-type [type]
+     ;; :bool is the 0/1 i64 word. Export ABI boxing to host boolean is the
+     ;; emitter's job at function boundaries, not a different local type.
+     (case type :i64 0x7e :f32 0x7d :f64 0x7c :bool 0x7e 0x6f)))
+
+#?(:kotoba
+   (defn- ty-host-position [index [:ref :form/r]] :i64
+     (if (and (form/is-int? index) (>= (form/int-value index) 0)) (form/int-value index) -1)))
+
+#?(:kotoba
+   (defn- ty-fail-marker [t [:ref :form/r]] [:ref :form/r]
+     (cond
+       (ty-is-kw? t :kotoba.wasm.typed/unbound-symbol)
+       (do (throw (ex-info "unbound typed Wasm symbol" {:phase :wasm-typed-lowering})) t)
+       (ty-is-kw? t :kotoba.wasm.typed/unsupported-expression)
+       (do (throw (ex-info "unsupported typed Wasm expression" {:phase :wasm-typed-lowering})) t)
+       (ty-is-kw? t :kotoba.wasm.typed/bad-position)
+       (do (throw (ex-info "heterogeneous position must be a non-negative integer literal" {:phase :wasm-typed-lowering})) t)
+       (ty-is-kw? t :kotoba.wasm.typed/position-out-of-range)
+       (do (throw (ex-info "heterogeneous position is out of range" {:phase :wasm-typed-lowering})) t)
+       :else t)))
+
+#?(:kotoba
+   (defn- ty-marker? [t [:ref :form/r]] :bool
+     (and (form/is-keyword? t)
+          (or (ty-is-kw? t :kotoba.wasm.typed/unbound-symbol)
+              (ty-is-kw? t :kotoba.wasm.typed/unsupported-expression)
+              (ty-is-kw? t :kotoba.wasm.typed/bad-position)
+              (ty-is-kw? t :kotoba.wasm.typed/position-out-of-range)))))
+
+#?(:kotoba
+   (defn host-index [index [:ref :form/r] form [:ref :form/r]] :i64
+     (let [n (ty-host-position index)]
+       (if (< n 0)
+         (do (throw (ex-info "heterogeneous position must be a non-negative integer literal" {:phase :wasm-typed-lowering})) n)
+         n))))
+
+#?(:kotoba
+   (defn- ty-hetero-core [type [:ref :form/r] index [:ref :form/r]] [:ref :form/r]
+     (let [items (form/nth-of type 1)
+           position (ty-host-position index)]
+       (cond (< position 0) (ty-kw :kotoba.wasm.typed/bad-position)
+             (>= position (form/count-of items)) (ty-kw :kotoba.wasm.typed/position-out-of-range)
+             :else (form/nth-of items position)))))
+
+#?(:kotoba
+   (defn hetero-item-type [type [:ref :form/r] index [:ref :form/r] form [:ref :form/r]] [:ref :form/r]
+     (ty-fail-marker (ty-hetero-core type index))))
+
+#?(:kotoba nil
+   :default
+   (defn host-index
+     "A STRUCTURAL position inside a heterogeneous value, as a host integer.
+   
+     KIR carries such a position as an ordinary i64 literal, and an i64 literal
+     is a `Long` on the JVM but a JavaScript `BigInt` under cljs/nbb. `nth`
+     accepts only a host number, so every emitter site that uses the position to
+     select a MEMBER TYPE has to convert first; on the JVM the conversion is a
+     no-op, which is why a JVM-only test cannot see the difference. The KIR
+     reference interpreter performs the same conversion for the same operations
+     (`kotoba.kir`'s `hetero-vector-at`/`hetero-vector-assoc`); this is that
+     conversion for the Wasm backend.
+   
+     Refuses anything that is not an integer literal with a named phase rather
+     than letting `nth` raise a host-level error the CLI can only report as an
+     internal compiler error."
+     [index form]
+     (let [n #?(:clj (when (integer? index) (long index))
+                :cljs (cond (i64/bigint-value? index) (js/Number index)
+                            (integer? index) index
+                            :else nil))]
+       (when-not (nat-int? n)
+         (throw (ex-info "heterogeneous position must be a non-negative integer literal"
+                         {:phase :wasm-typed-lowering :index index :form form})))
+       n)))
+
+#?(:kotoba nil
+   :default
+   (defn hetero-item-type
+     "The member type at a structural position of `[:vector [t0 t1 ...]]`."
+     [type index form]
+     (let [items (second type)
+           position (host-index index form)]
+       (when-not (< position (count items))
+         (throw (ex-info "heterogeneous position is out of range"
+                         {:phase :wasm-typed-lowering :index position
+                          :arity (count items) :form form})))
+       (nth items position))))
+
+#?(:kotoba nil
+   :default
+   (declare infer-type))
+
+#?(:kotoba
+   (defn- ty-type-table-0 [o :string] [:ref :form/r]
+     (cond
+       (ty-name-in? o " component-assert-bool component-i64-to-i32 ") (ty-kw :bool)
+       (ty-name-in? o " component-i32-to-f32 component-i64-to-f32 ") (ty-kw :f32)
+       (ty-name-in? o " component-i64-to-f64 ") (ty-kw :f64)
+       (ty-name-in? o " component-string-byte-length component-list-count component-list-at-i64 component-list-get-i64 component-option-list-capability-count component-result-list-capability-count ") (ty-kw :i64)
+       (ty-name-in? o " component-list-at-f64 component-list-get-f64 ") (ty-kw :f64)
+       (ty-name-in? o " component-option-record-capability-project-i64 ") (ty-kw :i64)
+       (ty-name-in? o " component-option-record-capability-project-f32 ") (ty-kw :f32)
+       (ty-name-in? o " component-option-record-capability-project-f64 ") (ty-kw :f64)
+       (ty-name-in? o " component-option-record-capability-project-bool ") (ty-kw :bool)
+       (ty-name-in? o " + - * quot bit-xor bit-and bit-or bit-not min max cap-call pair pair-first pair-second i32-wrap u32-wrap i32-wrapping-add i32-wrapping-mul i32-xor i32-shift-left i32-shift-right u32-shift-right xorshift32 i64-shift-left i64-shift-right u64-shift-right i64-extend-i32-u string-byte-length string-code-point-at map-get vector-count vector-get vector-f64-count vector-at hetero-vector-count typed-set-count typed-map-count xml-path-count xml-name-count string-index-count disjoint-set-i64-count document-count ") (ty-kw :i64)
+       (ty-name-in? o " f64-to-bits ") (ty-kw :i64)
+       (ty-name-in? o " f64-from-bits ") (ty-kw :f64)
+       (ty-name-in? o " i64-to-f64-checked i64-to-f64-rounded ") (ty-kw :f64)
+       (ty-name-in? o " f64-to-i64-checked f64-to-i64-truncating ") (ty-kw :i64)
+       :else (form/nil-form))))
+
+#?(:kotoba
+   (defn- ty-type-table-1 [o :string] [:ref :form/r]
+     (cond
+       (ty-name-in? o " f64-add f64-sub f64-mul f64-div f64-min f64-max f64-neg f64-abs f64-sqrt f64-sin-quarter-turn f64-cos-quarter-turn f64-sin-bounded f64-cos-bounded f64-exp-near-zero f64-log-near-one f64-atan2-bounded f64-exp-bounded f64-log-bounded ") (ty-kw :f64)
+       (ty-name-in? o " f64-eq f64-lt f64-le f64-gt f64-ge f64-unordered ") (ty-kw :bool)
+       (ty-name-in? o " f32-to-bits ") (ty-kw :i64)
+       (ty-name-in? o " f32-from-bits ") (ty-kw :f32)
+       (ty-name-in? o " f64-to-f32-rounded ") (ty-kw :f32)
+       (ty-name-in? o " f32-to-f64-exact ") (ty-kw :f64)
+       (ty-name-in? o " i64-to-f32-checked i64-to-f32-rounded ") (ty-kw :f32)
+       (ty-name-in? o " f32-to-i64-checked f32-to-i64-truncating ") (ty-kw :i64)
+       (ty-name-in? o " f32-add f32-sub f32-mul f32-div f32-min f32-max f32-neg f32-abs f32-sqrt ") (ty-kw :f32)
+       (ty-name-in? o " f32-eq f32-lt f32-le f32-gt f32-ge f32-unordered ") (ty-kw :bool)
+       (ty-name-in? o " = < > <= >= hetero-vector-equal typed-set-equal typed-map-equal record-equal ") (ty-kw :i64)
+       (ty-name-in? o " string=? ") (ty-kw :bool)
+       (ty-name-in? o " string-contains? ") (ty-kw :bool)
+       (ty-name-in? o " string-split-count ") (ty-kw :i64)
+       :else (form/nil-form))))
+
+#?(:kotoba
+   (defn- ty-type-table-2 [o :string] [:ref :form/r]
+     (cond
+       (ty-name-in? o " string-index-of bytes-count bytes-at ") (ty-kw :i64)
+       (ty-name-in? o " bytes-slice bytes-concat ") (ty-kw :bytes)
+       (ty-name-in? o " bytes-from-vector-i64 ") (ty-kw :bytes)
+       (ty-name-in? o " vector-i64-from-bytes ") (ty-kw :vector-i64)
+       (ty-name-in? o " string-from-utf8 ") (ty-kw :string)
+       (ty-name-in? o " bool-not option-some? result-ok? result-ok?-of option-some?-of typed-set-contains typed-map-contains string-index-contains ") (ty-kw :bool)
+       (ty-name-in? o " document-contains document-equal? document-set-contains? ") (ty-kw :bool)
+       (ty-name-in? o " string-concat string-substring string-replace-all string-fold-case string-upper keyword-name ") (ty-kw :string)
+       (ty-name-in? o " keyword-from-string document-kind ") (ty-kw :keyword)
+       (ty-name-in? o " symbol ") (ty-kw :symbol)
+       (ty-name-in? o " xml-name-text xml-path-text xml-path-attr ") (form/vec2 (ty-kw :option) (ty-kw :string))
+       (ty-name-in? o " decimal-f64-parse ") (form/vec2 (ty-kw :option) (ty-kw :f64))
+       (ty-name-in? o " decimal-f64x3-parse ") (form/vec2 (ty-kw :option) (form/vec2 (ty-kw :vector) (form/vec3 (ty-kw :f64) (ty-kw :f64) (ty-kw :f64))))
+       (ty-name-in? o " vector-new ") (ty-kw :vector-i64)
+       :else (form/nil-form))))
+
+#?(:kotoba
+   (defn- ty-type-table-3 [o :string] [:ref :form/r]
+     (cond
+       (ty-name-in? o " bytes-empty ") (ty-kw :bytes)
+       (ty-name-in? o " vector-f64-new ") (ty-kw :vector-f64)
+       (ty-name-in? o " string-index-new ") (ty-kw :string-index)
+       (ty-name-in? o " string-index-get ") (form/vec2 (ty-kw :option) (ty-kw :i64))
+       (ty-name-in? o " string-index-assoc ") (ty-kw :string-index)
+       (ty-name-in? o " disjoint-set-i64-new ") (ty-kw :disjoint-set-i64)
+       (ty-name-in? o " disjoint-set-i64-union ") (form/vec2 (ty-kw :option) (ty-kw :disjoint-set-i64))
+       (ty-name-in? o " document-null document-bool document-i64 document-f64 document-string document-keyword document-symbol document-vector document-list document-set document-map document-vector-assoc document-vector-conj document-vector-drop document-vector-remove document-vector-sort document-map-entry-at document-assoc document-dissoc document-merge ") (ty-kw :document)
+       (ty-name-in? o " document-get document-vector-at document-list-at document-map-entry-at ") (form/vec2 (ty-kw :option) (ty-kw :document))
+       (ty-name-in? o " document-sha256 document-print document-edn-print ") (ty-kw :string)
+       (ty-name-in? o " document-read document-edn-read ") (ty-kw :document)
+       (ty-name-in? o " document-string-value ") (form/vec2 (ty-kw :option) (ty-kw :string))
+       (ty-name-in? o " document-keyword-value ") (form/vec2 (ty-kw :option) (ty-kw :keyword))
+       (ty-name-in? o " document-symbol-value ") (form/vec2 (ty-kw :option) (ty-kw :symbol))
+       :else (form/nil-form))))
+
+#?(:kotoba
+   (defn- ty-type-table-4 [o :string] [:ref :form/r]
+     (cond
+       (ty-name-in? o " document-bool-value ") (form/vec2 (ty-kw :option) (ty-kw :bool))
+       (ty-name-in? o " document-i64-value ") (form/vec2 (ty-kw :option) (ty-kw :i64))
+       (ty-name-in? o " document-f64-value ") (form/vec2 (ty-kw :option) (ty-kw :f64))
+       (ty-name-in? o " vector-f64-get vector-f64-at ") (ty-kw :f64)
+       (ty-name-in? o " vector-f64-drop vector-f64-assoc vector-f64-conj ") (ty-kw :vector-f64)
+       (ty-name-in? o " vector-drop vector-assoc vector-assoc! vector-conj vector-alloc ") (ty-kw :vector-i64)
+       :else (form/nil-form))))
+
+#?(:kotoba
+   (defn- ty-type-table [o :string] [:ref :form/r]
+     (let [t0 (ty-type-table-0 o)] (if (form/is-nil? t0) (let [t1 (ty-type-table-1 o)] (if (form/is-nil? t1) (let [t2 (ty-type-table-2 o)] (if (form/is-nil? t2) (let [t3 (ty-type-table-3 o)] (if (form/is-nil? t3) (let [t4 (ty-type-table-4 o)] (if (form/is-nil? t4) (form/nil-form) t4)) t3)) t2)) t1)) t0))))
+
+#?(:kotoba
+   (defn- ty-last-arg [f [:ref :form/r]] [:ref :form/r]
+     (if (> (form/count-of f) 1) (form/last-of f) (form/nil-form))))
+
+#?(:kotoba
+   (defn- ty-find-field [entries [:ref :form/r] field [:ref :form/r]] [:ref :form/r]
+     (let [kids (form/kids-of entries)
+           n (vector-count kids)]
+       (loop [i 0]
+         (if (>= i n)
+           (form/nil-form)
+           (let [e (typed-list-nth [:list [:ref :form/r]] kids i)]
+             (if (form/eq (form/first-of e) field) (form/nth-of e 1) (recur (inc i)))))))))
+
+#?(:kotoba
+   (defn- ty-bind-env [kids [:list [:ref :form/r]] env [:ref :form/r] sigs [:ref :form/r]] [:ref :form/r]
+     (let [n (vector-count kids)]
+       (loop [j 0 cur env]
+         (if (>= (+ j 1) n)
+           cur
+           (let [t (ty-infer-core (ty-at kids (+ j 1)) cur sigs)]
+             (if (ty-marker? t)
+               t
+               (recur (+ j 2) (form/assoc-form cur (ty-at kids j) t)))))))))
+
+#?(:kotoba
+   (defn- ty-infer-core [form [:ref :form/r] env [:ref :form/r] sigs [:ref :form/r]] [:ref :form/r]
+     (cond
+       (form/is-int? form) (ty-kw :i64)
+       (form/is-string? form) (ty-kw :string)
+       (form/is-keyword? form) (ty-kw :keyword)
+       (form/is-bool? form) (ty-kw :bool)
+       (form/is-symbol? form)
+       (let [t (form/form-get env form)]
+         (if (form/is-nil? t) (ty-kw :kotoba.wasm.typed/unbound-symbol) t))
+       :else
+       (let [op (form/first-of form)
+             o (ty-sym-name op)
+             ty (form/nth-of form 1)
+             tt (ty-type-table o)]
+         (cond
+           (string=? o "let")
+           (let [env2 (ty-bind-env (form/kids-of (form/nth-of form 1)) env sigs)]
+             (if (form/is-keyword? env2) env2 (ty-infer-core (form/nth-of form 2) env2 sigs)))
+           (string=? o "if") (ty-infer-core (form/nth-of form 2) env sigs)
+           (string=? o "do") (ty-infer-core (ty-last-arg form) env sigs)
+           (string=? o "typed-cap-call") (form/nth-of form 3)
+           (not (form/is-nil? tt)) tt
+           (string=? o "variant-new") ty
+           (ty-name-in? o " option-some-of option-none-of result-ok-of result-err-of typed-list-new hetero-vector-new typed-set-new typed-map-new record-new ") ty
+           (string=? o "result-match-of")
+           (ty-infer-core (form/nth-of form 4) (form/assoc-form env (form/nth-of form 3) (form/nth-of ty 1)) sigs)
+           (string=? o "variant-match")
+           (let [branch (form/nth-of (form/nth-of form 3) 0)
+                 payload (form/nth-of (form/nth-of (form/nth-of ty 2) 0) 1)]
+             (ty-infer-core (form/nth-of branch 2) (form/assoc-form env (form/nth-of branch 1) payload) sigs))
+           (string=? o "option-match")
+           (ty-infer-core (form/nth-of form 5) (form/assoc-form env (form/nth-of form 4) (form/nth-of ty 1)) sigs)
+           (ty-name-in? o " result-value-of result-error-of ")
+           (if (string=? o "result-value-of") (form/nth-of ty 1) (form/nth-of ty 2))
+           (string=? o "option-value-of") (form/nth-of ty 1)
+           (string=? o "typed-map-get") (form/vec2 (ty-kw :option) (form/nth-of ty 2))
+           (string=? o "typed-map-entry-at")
+           (form/vec2 (ty-kw :option) (form/vec2 (ty-kw :vector) (form/vec2 (form/nth-of ty 1) (form/nth-of ty 2))))
+           (ty-name-in? o " typed-set-nth typed-list-nth ") (form/nth-of ty 1)
+           (string=? o "hetero-vector-at") (ty-hetero-core ty (form/nth-of form 3))
+           (string=? o "record-get") (ty-find-field (form/nth-of ty 2) (form/nth-of form 3))
+           (ty-name-in? o " hetero-vector-assoc typed-set-conj typed-set-disj typed-map-assoc typed-map-dissoc record-assoc ") ty
+           :else
+           (let [r (ty-fget (form/form-get sigs op) :result)]
+             (if (ty-truthy? r) r (ty-kw :kotoba.wasm.typed/unsupported-expression))))))))
+
+#?(:kotoba
+   (defn infer-type [form [:ref :form/r] env [:ref :form/r] signatures [:ref :form/r]] [:ref :form/r]
+     (ty-fail-marker (ty-infer-core form env signatures))))
+
+#?(:kotoba nil
+   :default
+   (defn infer-type [form env signatures]
+     (cond
+       #?(:clj (integer? form) :cljs (or (i64/bigint-value? form) (integer? form))) :i64
+       #?(:clj (instance? Float form) :cljs false) :f32
+       #?(:clj (instance? Double form) :cljs (number? form)) :f64
+       (string? form) :string
+       (keyword? form) :keyword
+       (boolean? form) :bool
+       (symbol? form) (or (get env form)
+                          (throw (ex-info "unbound typed Wasm symbol"
+                                          {:phase :wasm-typed-lowering :symbol form})))
+       :else
+       (let [[op & args] form]
+         (cond
+           (= op 'let)
+           (let [[bindings body] args
+                 env' (reduce (fn [current [name value]]
+                                (assoc current name (infer-type value current signatures)))
+                              env (partition 2 bindings))]
+             (infer-type body env' signatures))
+           (= op 'if) (infer-type (second args) env signatures)
+           (= op 'do) (infer-type (last args) env signatures)
+           (= op 'typed-cap-call) (nth args 2)
+           (= op 'component-assert-bool) :bool
+           (= op 'component-i64-to-i32) :bool
+           (= op 'component-i32-to-f32) :f32
+           (= op 'component-i64-to-f32) :f32
+           (= op 'component-i64-to-f64) :f64
+           (= op 'component-string-byte-length) :i64
+           (= op 'component-list-count) :i64
+           (= op 'component-list-at-i64) :i64
+           (= op 'component-list-at-f64) :f64
+           (= op 'component-list-get-i64) :i64
+           (= op 'component-list-get-f64) :f64
+           (= op 'component-option-list-capability-count) :i64
+           (= op 'component-result-list-capability-count) :i64
+           (contains?
+            '{component-option-record-capability-project-i64 :i64
+              component-option-record-capability-project-f32 :f32
+              component-option-record-capability-project-f64 :f64
+              component-option-record-capability-project-bool :bool}
+            op)
+           ('{component-option-record-capability-project-i64 :i64
+              component-option-record-capability-project-f32 :f32
+              component-option-record-capability-project-f64 :f64
+              component-option-record-capability-project-bool :bool}
+            op)
+           (contains? '#{+ - * quot bit-xor bit-and bit-or bit-not
+                                min max
+                                cap-call pair pair-first pair-second
+                         i32-wrap u32-wrap i32-wrapping-add i32-wrapping-mul i32-xor
+                         i32-shift-left i32-shift-right u32-shift-right xorshift32
+                         i64-shift-left i64-shift-right u64-shift-right
+                         i64-extend-i32-u
+                         string-byte-length string-code-point-at map-get vector-count vector-get vector-f64-count
+                         vector-at hetero-vector-count typed-set-count
+                         typed-map-count xml-path-count xml-name-count string-index-count
+                         disjoint-set-i64-count document-count} op) :i64
+           (= op 'f64-to-bits) :i64
+           (= op 'f64-from-bits) :f64
+           (contains? '#{i64-to-f64-checked i64-to-f64-rounded} op) :f64
+           (contains? '#{f64-to-i64-checked f64-to-i64-truncating} op) :i64
+           (contains? '#{f64-add f64-sub f64-mul f64-div f64-min f64-max f64-neg f64-abs f64-sqrt
+                         f64-sin-quarter-turn f64-cos-quarter-turn
+                         f64-sin-bounded f64-cos-bounded
+                         f64-exp-near-zero f64-log-near-one f64-atan2-bounded
+                         f64-exp-bounded f64-log-bounded} op) :f64
+           (contains? '#{f64-eq f64-lt f64-le f64-gt f64-ge f64-unordered} op) :bool
+           (= op 'f32-to-bits) :i64
+           (= op 'f32-from-bits) :f32
+           (= op 'f64-to-f32-rounded) :f32
+           (= op 'f32-to-f64-exact) :f64
+           (contains? '#{i64-to-f32-checked i64-to-f32-rounded} op) :f32
+           (contains? '#{f32-to-i64-checked f32-to-i64-truncating} op) :i64
+           (contains? '#{f32-add f32-sub f32-mul f32-div f32-min f32-max f32-neg f32-abs f32-sqrt} op) :f32
+           (contains? '#{f32-eq f32-lt f32-le f32-gt f32-ge f32-unordered} op) :bool
+           (contains? '#{= < > <= >= hetero-vector-equal typed-set-equal
+                         typed-map-equal record-equal} op) :i64
+           (= op 'string=?) :bool
+           (= op 'string-contains?) :bool
+           (= op 'string-split-count) :i64
+           (contains? '#{string-index-of bytes-count bytes-at} op) :i64
+           (contains? '#{bytes-slice bytes-concat} op) :bytes
+           ;; 2026-09-25 (superproject adr-2609242330): the bytes constructor,
+           ;; its inverse and the string constructor -- host intrinsics like the
+           ;; four reads above.
+           (= op 'bytes-from-vector-i64) :bytes
+           (= op 'vector-i64-from-bytes) :vector-i64
+           (= op 'string-from-utf8) :string
+           (contains? '#{bool-not option-some? result-ok?
+                         result-ok?-of option-some?-of typed-set-contains
+                         typed-map-contains string-index-contains} op) :bool
+           (contains? '#{document-contains document-equal? document-set-contains?} op) :bool
+           (contains? '#{string-concat string-substring string-replace-all string-fold-case string-upper keyword-name} op) :string
+           (contains? '#{keyword-from-string document-kind} op) :keyword
+           (= op 'symbol) :symbol
+           (contains? '#{xml-name-text xml-path-text xml-path-attr} op) [:option :string]
+           (= op 'decimal-f64-parse) [:option :f64]
+           (= op 'decimal-f64x3-parse) [:option [:vector [:f64 :f64 :f64]]]
+           (= op 'vector-new) :vector-i64
+           (= op 'bytes-empty) :bytes
+           (= op 'vector-f64-new) :vector-f64
+           (= op 'string-index-new) :string-index
+           (= op 'string-index-get) [:option :i64]
+           (= op 'string-index-assoc) :string-index
+           (= op 'disjoint-set-i64-new) :disjoint-set-i64
+           (= op 'disjoint-set-i64-union) [:option :disjoint-set-i64]
+           (contains? '#{document-null document-bool document-i64 document-f64
+                         document-string document-keyword document-symbol document-vector document-list document-set document-map
+                         document-vector-assoc document-vector-conj document-vector-drop
+                         document-vector-remove document-vector-sort document-map-entry-at
+                         document-assoc document-dissoc document-merge} op) :document
+           (contains? '#{document-get document-vector-at document-list-at document-map-entry-at} op) [:option :document]
+           (= op 'document-sha256) :string
+           (= op 'document-print) :string
+           (= op 'document-read) :document
+           (= op 'document-edn-print) :string
+           (= op 'document-edn-read) :document
+           (= op 'document-string-value) [:option :string]
+           (= op 'document-keyword-value) [:option :keyword]
+           (= op 'document-symbol-value) [:option :symbol]
+           (= op 'document-bool-value) [:option :bool]
+           (= op 'document-i64-value) [:option :i64]
+           (= op 'document-f64-value) [:option :f64]
+           (contains? '#{vector-f64-get vector-f64-at} op) :f64
+           (contains? '#{vector-f64-drop vector-f64-assoc vector-f64-conj} op) :vector-f64
+           (contains? '#{vector-drop vector-assoc vector-assoc! vector-conj vector-alloc} op) :vector-i64
+           (= op 'variant-new) (first args)
+           (contains? '#{option-some-of option-none-of result-ok-of result-err-of
+                         typed-list-new hetero-vector-new typed-set-new typed-map-new record-new} op) (first args)
+           (= op 'result-match-of)
+           (let [[type _ ok-name ok-body] args]
+             (infer-type ok-body (assoc env ok-name (second type)) signatures))
+           (= op 'variant-match)
+           (let [[type _ branches] args
+                 [[_ binder body]] branches
+                 payload-type (second (first (nth type 2)))]
+             (infer-type body (assoc env binder payload-type) signatures))
+           (= op 'option-match)
+           (let [[type _ _ some-name some-body] args]
+             (infer-type some-body (assoc env some-name (second type)) signatures))
+           (contains? '#{result-value-of result-error-of} op)
+           (if (= op 'result-value-of) (second (first args)) (nth (first args) 2))
+           (= op 'option-value-of) (second (first args))
+           (= op 'typed-map-get) [:option (nth (first args) 2)]
+           (= op 'typed-map-entry-at)
+           [:option [:vector [(second (first args)) (nth (first args) 2)]]]
+           ;; `typed-list-nth` is the list accessor sema has rewritten `nth` to
+           ;; since 2026-09-03; its result type is the item type, exactly as
+           ;; `typed-set-nth`'s is.
+           (contains? '#{typed-set-nth typed-list-nth} op) (second (first args))
+           (= op 'hetero-vector-at)
+           (hetero-item-type (first args) (nth args 2) form)
+           (= op 'record-get)
+           (let [[type _ field] args]
+             (second (some #(when (= field (first %)) %) (nth type 2))))
+           (contains? '#{hetero-vector-assoc typed-set-conj typed-set-disj
+                         typed-map-assoc typed-map-dissoc record-assoc} op)
+           (first args)
+           :else (or (:result (get signatures op))
+                     (throw (ex-info "unsupported typed Wasm expression"
+                                     {:phase :wasm-typed-lowering :operation op :form form}))))))))
