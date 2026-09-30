@@ -153,10 +153,46 @@
          scalar-vector-uses
          scalar-vector-local-limit)
 
+;; amu ADR 0353 point 7 (floor :allocation-budget-targets): every constructor
+;; debits one unit of the module's fuel global, before its operands, exactly
+;; where kotoba.kir charges (`cell-constructor-ops`, osaho 635bea6d) -- so a
+;; loop helper, whose re-entries are free, cannot build past the budget the
+;; module was granted. The set is the reference's, whether or not this
+;; profile lowers every member.
+(def ^:private constructor-ops
+  '#{pair kgraph-assert! map-new map-assoc option-some result-ok result-err
+     result-ok-of result-err-of variant-new option-some-of option-none-of
+     hetero-vector-new hetero-vector-assoc typed-list-new typed-set-new
+     typed-set-conj typed-set-disj typed-map-new typed-map-assoc typed-map-dissoc
+     record-new record-assoc vector-new vector-conj vector-assoc vector-assoc!
+     vector-alloc vector-drop vector-take vector-f64-new vector-f64-conj
+     vector-f64-assoc vector-f64-drop vector-f64-take string-index-new
+     string-index-assoc disjoint-set-i64-new disjoint-set-i64-union
+     document-vector document-list document-set document-map
+     bytes-slice bytes-concat bytes-from-vector-i64 vector-i64-from-bytes})
+
+(def ^:private constructor-fuel-charge
+  "The entry charge's bytes: trap (`unreachable`) when fuel is 0, else fuel -= 1."
+  [0x23 0 0x50 0x04 0x40 0x00 0x0b          ; global.get;eqz;if;unreachable;end
+   0x23 0 0x42 1 0x7d 0x24 0])              ; global.get;const 1;sub;global.set
+
+(defn- constructor-form? [form]
+  (and (seq? form) (contains? constructor-ops (first form))))
+
+(defn- charged [form code]
+  (if (constructor-form? form) (into constructor-fuel-charge code) code))
+
 (defn- emit-many [forms env ctx]
   (mapcat #(emit-expr % env ctx) forms))
 
+(declare emit-expr-unmetered)
+
 (defn emit-expr
+  "`emit-expr-unmetered`, with a constructor's fuel debit in front."
+  [form env ctx]
+  (charged form (emit-expr-unmetered form env ctx)))
+
+(defn- emit-expr-unmetered
   [form env {:keys [function-indices intrinsic-indices next-local
                     tail-loop-name tail-loop-depth] :as ctx}]
   (cond
@@ -1091,7 +1127,8 @@
                     setup (mapcat (fn [[item local]]
                                     (concat (emit* item env) [::local-set local]))
                                   (map vector items item-locals))]
-                (concat setup (emit-local-vector-at item-locals index-form env))))
+                (concat constructor-fuel-charge setup
+                        (emit-local-vector-at item-locals index-form env))))
             (emit-get [type value-form index item-type env]
               (let [code (concat (i32-const (descriptor-id type)) (emit* value-form env)
                                  (i32-const index)
@@ -2038,6 +2075,9 @@
             (emit*
               ([form env] (emit* form env 0))
               ([form env tail-loop-depth]
+               (charged form (emit-unmetered* form env tail-loop-depth))))
+            (emit-unmetered*
+              ([form env tail-loop-depth]
                (cond
                 (and (map? form) (contains? form :wasm-local)) [::local-get (:wasm-local form)]
                 #?(:clj (integer? form)
@@ -2091,11 +2131,15 @@
                                                     (rest value)))
                                 value-code
                                 (cond
+                                  ;; the vector is kept in locals, but
+                                  ;; it was constructed: it pays as one.
                                   scalar-vector?
-                                  (mapcat (fn [[item local]]
+                                  (concat
+                                   constructor-fuel-charge
+                                   (mapcat (fn [[item local]]
                                             (concat (emit* item current-env)
                                                     [::local-set local]))
-                                          (map vector (rest value) item-locals))
+                                          (map vector (rest value) item-locals)))
                                   (= :u32 representation)
                                   (emit-i32* value current-env)
                                   :else (emit* value current-env))
@@ -2595,6 +2639,7 @@
                       (cond
                         (scalar-replaced-vector-count? form)
                         (concat
+                         constructor-fuel-charge
                          (mapcat #(concat (emit* % env) [0x1a]) (rest value))
                          [0x42] (sleb (count (rest value))))
 
