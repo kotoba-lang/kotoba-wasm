@@ -2,534 +2,1596 @@
   "Checked Canonical ABI layout plans. This namespace describes transport;
   it does not admit a descriptor for component emission by itself."
   {:kotoba/export [export-plan layout layout-leaves profile string-encoding]}
-  (:require [kotoba.kir.value :as value]))
+  #?(:clj (:require [kotoba.kir.value :as value]) :cljs (:require [kotoba.kir.value :as value]))
+  #?(:kotoba (:schemas {:form/r [:record :form/r [[:tag :i64] [:s :string] [:n :i64] [:k :keyword]
+                                          [:kids [:list [:ref :form/r]]]]]
+                                 :form/rd [:record :form/rd [[:form [:ref :form/r]] [:pos :i64]]]})))
 
-(def profile :component-model/standard32-v1)
-(def string-encoding :utf8)
+#?(:kotoba
+   (defn- form-no-forms [] [:list [:ref :form/r]]
+     (typed-list-new [:list [:ref :form/r]])))
 
-(defn- reject [message data]
-  (throw (ex-info message (assoc data :phase :canonical-abi-layout))))
+#?(:kotoba
+   (defn- form-one-form [a [:ref :form/r]] [:list [:ref :form/r]]
+     (typed-list-new [:list [:ref :form/r]] a)))
 
-(defn- align-up [value alignment]
-  (* alignment (quot (+ value (dec alignment)) alignment)))
+#?(:kotoba
+   (defn- form-two-forms [a [:ref :form/r] b [:ref :form/r]] [:list [:ref :form/r]]
+     (typed-list-new [:list [:ref :form/r]] a b)))
 
-(declare layout*)
+#?(:kotoba
+   (defn- form-three-forms [a [:ref :form/r] b [:ref :form/r] c [:ref :form/r]] [:list [:ref :form/r]]
+     (typed-list-new [:list [:ref :form/r]] a b c)))
 
-(defn- discriminant-byte-size
-  "In-memory byte width of a variant discriminant for `case-count` cases,
-  mirroring the Component Model spec's `discriminant_type`: u8 up to 256
-  cases, u16 up to 65536, u32 beyond (`variant-case-limit` in
-  `kotoba.kir.value` keeps every admitted variant well under the u8
-  boundary today; the wider cases are implemented for spec fidelity, not
-  because anything in this codebase currently produces them)."
-  [case-count]
-  (cond (<= case-count 256) 1
-        (<= case-count 65536) 2
-        :else 4))
+#?(:kotoba
+   (defn- form-append-form [xs [:list [:ref :form/r]] x [:ref :form/r]] [:list [:ref :form/r]]
+     (typed-list-conj [:list [:ref :form/r]] xs x)))
 
-(defn- join-core-type
-  "The Component Model spec's `join`: the single core wasm value type two
-  positions of two different variant cases' flattened payloads must share
-  when they occupy the same flat position. Identical types need no
-  coercion; an i32/f32 mismatch (a scalar/bool case sharing a position with
-  an f32 case) still fits in i32; every other mismatch (anything touching
-  i64 or f64 against a different type) widens to i64. This is intentionally
-  exactly the three-line spec function, not a superset or a subset of it."
-  [a b]
-  (cond (= a b) a
-        (= #{a b} #{:i32 :f32}) :i32
-        :else :i64))
+#?(:kotoba
+   (defn- form-mk [t :i64 s :string n :i64 k :keyword kids [:list [:ref :form/r]]] [:ref :form/r]
+     (record-new [:ref :form/r] t s n k kids)))
 
-(defn- variant-flatten-payload
-  "Fold every case's own flat core-type sequence into one joined sequence,
-  left to right, matching `flatten_variant`'s loop: each case's own flat
-  types are compared position-by-position against whatever the fold has
-  already accumulated there (via `join-core-type`), and any position past
-  the fold's current length is simply appended. This is a component-level
-  flattening (the shape the guest receives as bare core wasm parameters),
-  distinct from the in-memory union layout `variant-layout` computes below
-  for the result area (see docstring there)."
-  [case-layouts]
-  (reduce
-   (fn [flat {:keys [layout]}]
-     (let [case-flat (:flat layout)]
-       (loop [index 0 acc flat]
-         (if (>= index (count case-flat))
+#?(:kotoba
+   (defn- form-nil-form [] [:ref :form/r] (form-mk 0 "" 0 :none (form-no-forms))))
+
+#?(:kotoba
+   (defn- form-bool-form [b :bool] [:ref :form/r] (form-mk 1 "" (if b 1 0) :none (form-no-forms))))
+
+#?(:kotoba
+   (defn- form-int-form [n :i64] [:ref :form/r] (form-mk 2 "" n :none (form-no-forms))))
+
+#?(:kotoba
+   (defn- form-string-form [s :string] [:ref :form/r] (form-mk 3 s 0 :none (form-no-forms))))
+
+#?(:kotoba
+   (defn- form-keyword-form [k :keyword] [:ref :form/r] (form-mk 4 "" 0 k (form-no-forms))))
+
+#?(:kotoba
+   (defn- form-symbol-form [s :string] [:ref :form/r] (form-mk 5 s 0 :none (form-no-forms))))
+
+#?(:kotoba
+   (defn- form-form-seq [kids [:list [:ref :form/r]]] [:ref :form/r] (form-mk 6 "" 0 :none kids)))
+
+#?(:kotoba
+   (defn- form-form-vec [kids [:list [:ref :form/r]]] [:ref :form/r] (form-mk 7 "" 0 :none kids)))
+
+#?(:kotoba
+   (defn- form-form-set [kids [:list [:ref :form/r]]] [:ref :form/r] (form-mk 8 "" 0 :none kids)))
+
+#?(:kotoba
+   (defn- form-form-map [kids [:list [:ref :form/r]]] [:ref :form/r] (form-mk 9 "" 0 :none kids)))
+
+#?(:kotoba
+   (defn- form-tag-of [f [:ref :form/r]] :i64 (record-get [:ref :form/r] f :tag)))
+
+#?(:kotoba
+   (defn- form-kids-of [f [:ref :form/r]] [:list [:ref :form/r]] (record-get [:ref :form/r] f :kids)))
+
+#?(:kotoba
+   (defn- form-int-value [f [:ref :form/r]] :i64 (record-get [:ref :form/r] f :n)))
+
+#?(:kotoba
+   (defn- form-string-value [f [:ref :form/r]] :string (record-get [:ref :form/r] f :s)))
+
+#?(:kotoba
+   (defn- form-symbol-value [f [:ref :form/r]] :string (record-get [:ref :form/r] f :s)))
+
+#?(:kotoba
+   (defn- form-keyword-value [f [:ref :form/r]] :keyword (record-get [:ref :form/r] f :k)))
+
+#?(:kotoba
+   (defn- form-bool-value [f [:ref :form/r]] :bool (= 1 (record-get [:ref :form/r] f :n))))
+
+#?(:kotoba
+   (defn- form-is-nil? [f [:ref :form/r]] :bool (= 0 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-bool? [f [:ref :form/r]] :bool (= 1 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-int? [f [:ref :form/r]] :bool (= 2 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-string? [f [:ref :form/r]] :bool (= 3 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-keyword? [f [:ref :form/r]] :bool (= 4 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-symbol? [f [:ref :form/r]] :bool (= 5 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-seq? [f [:ref :form/r]] :bool (= 6 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-vec? [f [:ref :form/r]] :bool (= 7 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-set? [f [:ref :form/r]] :bool (= 8 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-map? [f [:ref :form/r]] :bool (= 9 (form-tag-of f))))
+
+#?(:kotoba
+   (defn- form-is-list-like? [f [:ref :form/r]] :bool (or (= 6 (form-tag-of f)) (= 7 (form-tag-of f)))))
+
+#?(:kotoba
+   (defn- form-is-true? [f [:ref :form/r]] :bool (and (= 1 (form-tag-of f)) (= 1 (record-get [:ref :form/r] f :n)))))
+
+#?(:kotoba
+   (defn- form-count-of [f [:ref :form/r]] :i64 (vector-count (form-kids-of f))))
+
+#?(:kotoba
+   (defn- form-nth-of [f [:ref :form/r] i :i64] [:ref :form/r]
+     (if (and (>= i 0) (< i (form-count-of f)))
+       (typed-list-nth [:list [:ref :form/r]] (form-kids-of f) i)
+       (form-nil-form))))
+
+#?(:kotoba
+   (defn- form-first-of [f [:ref :form/r]] [:ref :form/r] (form-nth-of f 0)))
+
+#?(:kotoba
+   (defn- form-lookup-from [kids [:list [:ref :form/r]] key [:ref :form/r] i :i64] [:ref :form/r]
+     (let [n (vector-count kids)]
+       (loop [j i]
+         (if (>= (+ j 1) n)
+           (form-nil-form)
+           (if (form-eq (typed-list-nth [:list [:ref :form/r]] kids j) key)
+             (typed-list-nth [:list [:ref :form/r]] kids (+ j 1))
+             (recur (+ j 2))))))))
+
+#?(:kotoba
+   (defn- form-form-get [m [:ref :form/r] key [:ref :form/r]] [:ref :form/r]
+     (form-lookup-from (form-kids-of m) key 0)))
+
+#?(:kotoba
+   (defn- form-lookup-has [kids [:list [:ref :form/r]] key [:ref :form/r]] :bool
+     (let [n (vector-count kids)]
+       (loop [j 0]
+         (if (>= (+ j 1) n)
+           false
+           (if (form-eq (typed-list-nth [:list [:ref :form/r]] kids j) key)
+             true
+             (recur (+ j 2))))))))
+
+#?(:kotoba
+   (defn- form-form-has? [m [:ref :form/r] key [:ref :form/r]] :bool
+     (form-lookup-has (form-kids-of m) key)))
+
+#?(:kotoba
+   (defn- form-member? [xs [:list [:ref :form/r]] x [:ref :form/r]] :bool
+     (let [n (vector-count xs)]
+       (loop [i 0]
+         (if (>= i n) false
+           (if (form-eq (typed-list-nth [:list [:ref :form/r]] xs i) x) true (recur (inc i))))))))
+
+#?(:kotoba
+   (defn- form-ordered-eq [xs [:list [:ref :form/r]] ys [:list [:ref :form/r]]] :bool
+     (let [n (vector-count xs)]
+       (if (= n (vector-count ys))
+         (loop [i 0]
+           (if (>= i n) true
+             (if (form-eq (typed-list-nth [:list [:ref :form/r]] xs i) (typed-list-nth [:list [:ref :form/r]] ys i))
+               (recur (inc i))
+               false)))
+         false))))
+
+#?(:kotoba
+   (defn- form-set-eq [xs [:list [:ref :form/r]] ys [:list [:ref :form/r]]] :bool
+     (let [n (vector-count xs)]
+       (if (= n (vector-count ys))
+         (loop [i 0]
+           (if (>= i n) true
+             (if (form-member? ys (typed-list-nth [:list [:ref :form/r]] xs i)) (recur (inc i)) false)))
+         false))))
+
+#?(:kotoba
+   (defn- form-map-eq [xs [:list [:ref :form/r]] ys [:list [:ref :form/r]]] :bool
+     (let [n (vector-count xs)]
+       (if (= n (vector-count ys))
+         (loop [j 0]
+           (if (>= (+ j 1) n) true
+             (let [k (typed-list-nth [:list [:ref :form/r]] xs j)]
+               (if (and (form-lookup-has ys k)
+                        (form-eq (typed-list-nth [:list [:ref :form/r]] xs (+ j 1)) (form-lookup-from ys k 0)))
+                 (recur (+ j 2))
+                 false))))
+         false))))
+
+#?(:kotoba
+   (defn- form-eq
+     "Structural equality, as `=` on the host's data: a list and a vector are
+     different kinds here (as are they to the reader), sets and maps compare
+     without order."
+     [a [:ref :form/r] b [:ref :form/r]] :bool
+     (let [t (form-tag-of a)]
+       (and (= t (form-tag-of b))
+            (cond
+              (= t 0) true
+              (= t 1) (= (record-get [:ref :form/r] a :n) (record-get [:ref :form/r] b :n))
+              (= t 2) (= (record-get [:ref :form/r] a :n) (record-get [:ref :form/r] b :n))
+              (= t 3) (string=? (record-get [:ref :form/r] a :s) (record-get [:ref :form/r] b :s))
+              (= t 4) (= (record-get [:ref :form/r] a :k) (record-get [:ref :form/r] b :k))
+              (= t 5) (string=? (record-get [:ref :form/r] a :s) (record-get [:ref :form/r] b :s))
+              (= t 8) (form-set-eq (form-kids-of a) (form-kids-of b))
+              (= t 9) (form-map-eq (form-kids-of a) (form-kids-of b))
+              :else (form-ordered-eq (form-kids-of a) (form-kids-of b)))))))
+
+#?(:kotoba
+   (defn- form-rest-list
+     "The kids of F after the first, as a list."
+     [f [:ref :form/r]] [:list [:ref :form/r]]
+     (let [xs (form-kids-of f)
+           n (vector-count xs)]
+       (loop [i 1 acc (form-no-forms)]
+         (if (>= i n)
            acc
-           (let [core-type (nth case-flat index)]
+           (recur (inc i) (typed-list-conj [:list [:ref :form/r]] acc (typed-list-nth [:list [:ref :form/r]] xs i))))))))
+
+#?(:kotoba
+   (defn- form-last-of [f [:ref :form/r]] [:ref :form/r]
+     (form-nth-of f (dec (form-count-of f)))))
+
+#?(:kotoba
+   (defn- form-cons-onto [x [:ref :form/r] xs [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (let [n (vector-count xs)]
+       (loop [i 0 acc (form-one-form x)]
+         (if (>= i n)
+           acc
+           (recur (inc i) (typed-list-conj [:list [:ref :form/r]] acc (typed-list-nth [:list [:ref :form/r]] xs i))))))))
+
+#?(:kotoba
+   (defn- form-assoc-form
+     "Map M with K bound to V: the first entry whose key is K keeps its place and
+     takes V, else K V are appended (as `assoc` on the host's map)."
+     [m [:ref :form/r] k [:ref :form/r] v [:ref :form/r]] [:ref :form/r]
+     (let [xs (form-kids-of m)
+           n (vector-count xs)]
+       (if (form-lookup-has xs k)
+         (form-form-map
+          (loop [j 0 acc (form-no-forms)]
+            (if (>= (+ j 1) n)
+              acc
+              (let [key (typed-list-nth [:list [:ref :form/r]] xs j)]
+                (recur (+ j 2)
+                       (typed-list-conj [:list [:ref :form/r]]
+                                        (typed-list-conj [:list [:ref :form/r]] acc key)
+                                        (if (form-eq key k) v (typed-list-nth [:list [:ref :form/r]] xs (+ j 1)))))))))
+         (form-form-map (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] xs k) v))))))
+
+#?(:kotoba
+   (defn- form-call0 [name :string] [:ref :form/r] (form-form-seq (form-one-form (form-symbol-form name)))))
+
+#?(:kotoba
+   (defn- form-call1 [name :string a [:ref :form/r]] [:ref :form/r]
+     (form-form-seq (form-two-forms (form-symbol-form name) a))))
+
+#?(:kotoba
+   (defn- form-call2 [name :string a [:ref :form/r] b [:ref :form/r]] [:ref :form/r]
+     (form-form-seq (form-three-forms (form-symbol-form name) a b))))
+
+#?(:kotoba
+   (defn- form-call3 [name :string a [:ref :form/r] b [:ref :form/r] c [:ref :form/r]] [:ref :form/r]
+     (form-form-seq (typed-list-conj [:list [:ref :form/r]] (form-three-forms (form-symbol-form name) a b) c))))
+
+#?(:kotoba
+   (defn- form-call4 [name :string a [:ref :form/r] b [:ref :form/r] c [:ref :form/r] d [:ref :form/r]] [:ref :form/r]
+     (form-form-seq (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] (form-three-forms (form-symbol-form name) a b) c) d))))
+
+#?(:kotoba
+   (defn- form-call5 [name :string a [:ref :form/r] b [:ref :form/r] c [:ref :form/r] d [:ref :form/r] e [:ref :form/r]] [:ref :form/r]
+     (form-form-seq (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] (form-three-forms (form-symbol-form name) a b) c) d) e))))
+
+#?(:kotoba
+   (defn- form-call6 [name :string a [:ref :form/r] b [:ref :form/r] c [:ref :form/r] d [:ref :form/r] e [:ref :form/r] f [:ref :form/r]] [:ref :form/r]
+     (form-form-seq (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] (form-three-forms (form-symbol-form name) a b) c) d) e) f))))
+
+#?(:kotoba
+   (defn- form-vec2 [a [:ref :form/r] b [:ref :form/r]] [:ref :form/r] (form-form-vec (form-two-forms a b))))
+
+#?(:kotoba
+   (defn- form-vec3 [a [:ref :form/r] b [:ref :form/r] c [:ref :form/r]] [:ref :form/r] (form-form-vec (form-three-forms a b c))))
+
+#?(:kotoba
+   (defn- form-vec4 [a [:ref :form/r] b [:ref :form/r] c [:ref :form/r] d [:ref :form/r]] [:ref :form/r]
+     (form-form-vec (typed-list-conj [:list [:ref :form/r]] (form-three-forms a b c) d))))
+
+#?(:kotoba
+   (defn- form-vec5 [a [:ref :form/r] b [:ref :form/r] c [:ref :form/r] d [:ref :form/r] e [:ref :form/r]] [:ref :form/r]
+     (form-form-vec (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] (form-three-forms a b c) d) e))))
+
+#?(:kotoba
+   (defn- form-vec6 [a [:ref :form/r] b [:ref :form/r] c [:ref :form/r] d [:ref :form/r] e [:ref :form/r] f [:ref :form/r]] [:ref :form/r]
+     (form-form-vec (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] (typed-list-conj [:list [:ref :form/r]] (form-three-forms a b c) d) e) f))))
+
+#?(:kotoba
+   (defn- form-doc-at [d :document i :i64] :document
+     (option-value-of [:option :document] (document-vector-at d i) (document-null))))
+
+#?(:kotoba
+   (defn- form-doc-list-at [d :document i :i64] :document
+     (option-value-of [:option :document] (document-list-at d i) (document-null))))
+
+#?(:kotoba
+   (defn- form-doc-entry-at [d :document i :i64] :document
+     (option-value-of [:option :document] (document-map-entry-at d i) (document-null))))
+
+#?(:kotoba
+   (defn- form-doc-items [d :document list? :bool] [:list [:ref :form/r]]
+     (let [n (document-count d)]
+       (loop [i 0 acc (form-no-forms)]
+         (if (>= i n)
+           acc
+           (recur (inc i)
+                  (typed-list-conj [:list [:ref :form/r]] acc
+                                   (form-from-document (if list? (form-doc-list-at d i) (form-doc-at d i))))))))))
+
+#?(:kotoba
+   (defn- form-doc-map-items [d :document] [:list [:ref :form/r]]
+     (let [n (document-count d)]
+       (loop [i 0 acc (form-no-forms)]
+         (if (>= i n)
+           acc
+           (let [e (form-doc-entry-at d i)]
+             (recur (inc i)
+                    (typed-list-conj [:list [:ref :form/r]]
+                                     (typed-list-conj [:list [:ref :form/r]] acc (form-from-document (form-doc-at e 0)))
+                                     (form-from-document (form-doc-at e 1))))))))))
+
+#?(:kotoba
+   (defn- form-set-marker? [d :document] :bool
+     (and (> (document-count d) 0)
+          (= (document-kind (form-doc-at d 0)) :keyword)
+          (= (option-value-of [:option :keyword] (document-keyword-value (form-doc-at d 0)) :none) :kotoba.form/set))))
+
+#?(:kotoba
+   (defn- form-doc-set-items [d :document] [:list [:ref :form/r]]
+     (let [n (document-count d)]
+       (loop [i 1 acc (form-no-forms)]
+         (if (>= i n)
+           acc
+           (recur (inc i) (typed-list-conj [:list [:ref :form/r]] acc (form-from-document (form-doc-at d i)))))))))
+
+#?(:kotoba
+   (defn- form-from-document [d :document] [:ref :form/r]
+     (let [kind (document-kind d)]
+       (cond
+         (= kind :bool) (form-bool-form (option-value-of [:option :bool] (document-bool-value d) false))
+         (= kind :i64) (form-int-form (option-value-of [:option :i64] (document-i64-value d) 0))
+         (= kind :string) (form-string-form (option-value-of [:option :string] (document-string-value d) ""))
+         (= kind :keyword) (form-keyword-form (option-value-of [:option :keyword] (document-keyword-value d) :none))
+         (= kind :vector) (if (form-set-marker? d) (form-form-set (form-doc-set-items d)) (form-form-vec (form-doc-items d false)))
+         (= kind :list) (form-form-seq (form-doc-items d true))
+         (= kind :set) (form-form-set (form-doc-items d false))
+         (= kind :map) (form-form-map (form-doc-map-items d))
+         :else (form-nil-form)))))
+
+#?(:kotoba
+   (defn- form-keyword-has-namespace? [f [:ref :form/r]] :bool
+     (and (= 4 (form-tag-of f))
+          (>= (string-find-byte (document-edn-print (document-keyword (record-get [:ref :form/r] f :k))) 47 0) 0))))
+
+#?(:kotoba
+   (defn- form-keys-of [m [:ref :form/r]] [:ref :form/r]
+     (let [xs (form-kids-of m)
+           n (vector-count xs)]
+       (form-form-set
+        (loop [j 0 acc (form-no-forms)]
+          (if (>= j n)
+            acc
+            (recur (+ j 2) (typed-list-conj [:list [:ref :form/r]] acc (typed-list-nth [:list [:ref :form/r]] xs j)))))))))
+
+#?(:kotoba
+   (defn- form-dissoc-form
+     "Map M without K (as `dissoc` on the host's map)."
+     [m [:ref :form/r] k [:ref :form/r]] [:ref :form/r]
+     (let [xs (form-kids-of m)
+           n (vector-count xs)]
+       (form-form-map
+        (loop [j 0 acc (form-no-forms)]
+          (if (>= (+ j 1) n)
+            acc
+            (let [key (typed-list-nth [:list [:ref :form/r]] xs j)]
+              (recur (+ j 2)
+                     (if (form-eq key k)
+                       acc
+                       (typed-list-conj [:list [:ref :form/r]]
+                                        (typed-list-conj [:list [:ref :form/r]] acc key)
+                                        (typed-list-nth [:list [:ref :form/r]] xs (+ j 1))))))))))))
+
+#?(:kotoba
+   (defn- form-append-many [xs [:list [:ref :form/r]] ys [:list [:ref :form/r]]] [:list [:ref :form/r]]
+     (let [n (vector-count ys)]
+       (loop [i 0 acc xs]
+         (if (>= i n) acc (recur (inc i) (typed-list-conj [:list [:ref :form/r]] acc (typed-list-nth [:list [:ref :form/r]] ys i))))))))
+
+#?(:kotoba
+   (defn- form-rd [f [:ref :form/r] pos :i64] [:ref :form/rd]
+     (record-new [:ref :form/rd] f pos)))
+
+#?(:kotoba
+   (defn- form-rd-form [r [:ref :form/rd]] [:ref :form/r] (record-get [:ref :form/rd] r :form)))
+
+#?(:kotoba
+   (defn- form-rd-pos [r [:ref :form/rd]] :i64 (record-get [:ref :form/rd] r :pos)))
+
+#?(:kotoba
+   (defn- form-rd-fail [] :i64 (vector-at (vector-i64) 0)))
+
+#?(:kotoba
+   (defn- form-rd-width [c :i64] :i64
+     (cond (< c 128) 1 (< c 2048) 2 (< c 65536) 3 :else 4)))
+
+#?(:kotoba
+   (defn- form-rd-space? [c :i64] :bool
+     (or (= c 32) (= c 10) (= c 13) (= c 9) (= c 44))))
+
+#?(:kotoba
+   (defn- form-rd-delimiter? [c :i64] :bool
+     (or (form-rd-space? c) (= c 40) (= c 41) (= c 91) (= c 93) (= c 123) (= c 125) (= c 34) (= c 59))))
+
+#?(:kotoba
+   (defn- form-rd-line-end [s :string i :i64 n :i64] :i64
+     (loop [i i]
+       (if (or (>= i n) (= 10 (string-code-point-at s i))) i (recur (+ i (form-rd-width (string-code-point-at s i))))))))
+
+#?(:kotoba
+   (defn- form-rd-skip [s :string i :i64] :i64
+     (let [n (string-byte-length s)]
+       (loop [i i]
+         (if (>= i n)
+           i
+           (let [c (string-code-point-at s i)]
+             (cond (form-rd-space? c) (recur (inc i))
+                   (= c 59) (recur (form-rd-line-end s i n))
+                   :else i)))))))
+
+#?(:kotoba
+   (defn- form-rd-token-end [s :string i :i64 n :i64] :i64
+     (loop [i i]
+       (if (>= i n)
+         i
+         (let [c (string-code-point-at s i)]
+           (if (form-rd-delimiter? c) i (recur (+ i (form-rd-width c)))))))))
+
+#?(:kotoba
+   (defn- form-rd-digit? [c :i64] :bool (and (>= c 48) (<= c 57))))
+
+#?(:kotoba
+   (defn- form-rd-decimal [s :string i :i64 e :i64] :i64
+     (loop [j i v 0]
+       (if (>= j e)
+         v
+         (let [c (string-code-point-at s j)]
+           (if (form-rd-digit? c) (recur (inc j) (+ (* v 10) (- c 48))) (form-rd-fail)))))))
+
+#?(:kotoba
+   (defn- form-rd-number? [s :string i :i64 e :i64] :bool
+     (let [c (string-code-point-at s i)]
+       (or (form-rd-digit? c)
+           (and (= c 45) (> (- e i) 1) (form-rd-digit? (string-code-point-at s (inc i))))))))
+
+#?(:kotoba
+   (defn- form-rd-atom [s :string i :i64] [:ref :form/rd]
+     (let [n (string-byte-length s)
+           e (form-rd-token-end s i n)
+           token (string-substring s i e)
+           c (string-code-point-at s i)]
+       (cond
+         (= e i) (form-rd (form-nil-form) (form-rd-fail))
+         (= c 58) (form-rd (form-keyword-form (keyword-from-string (string-substring s (inc i) e))) e)
+         (string=? token "nil") (form-rd (form-nil-form) e)
+         (string=? token "true") (form-rd (form-bool-form true) e)
+         (string=? token "false") (form-rd (form-bool-form false) e)
+         (form-rd-number? s i e)
+         (form-rd (form-int-form (if (= c 45) (- 0 (form-rd-decimal s (inc i) e)) (form-rd-decimal s i e))) e)
+         :else (form-rd (form-symbol-form token) e)))))
+
+#?(:kotoba
+   (defn- form-rd-string-end [s :string i :i64] :i64
+     (let [n (string-byte-length s)]
+       (loop [j (inc i)]
+         (if (>= j n)
+           (form-rd-fail)
+           (let [c (string-code-point-at s j)]
+             (cond (= c 34) (inc j)
+                   (= c 92) (recur (+ j 2))
+                   :else (recur (+ j (form-rd-width c))))))))))
+
+#?(:kotoba
+   (defn- form-rd-string [s :string i :i64] [:ref :form/rd]
+     (let [e (form-rd-string-end s i)
+           d (document-edn-read (string-substring s i e))]
+       (form-rd (form-string-form (option-value-of [:option :string] (document-string-value d) "")) e))))
+
+#?(:kotoba
+   (defn- form-rd-items [s :string i :i64 close :i64] [:ref :form/rd]
+     (let [n (string-byte-length s)]
+       (loop [j (form-rd-skip s i) acc (form-no-forms)]
+         (if (>= j n)
+           (form-rd (form-nil-form) (form-rd-fail))
+           (if (= close (string-code-point-at s j))
+             (form-rd (form-form-vec acc) (inc j))
+             (let [r (form-rd-value s j)]
+               (recur (form-rd-skip s (form-rd-pos r)) (typed-list-conj [:list [:ref :form/r]] acc (form-rd-form r))))))))))
+
+#?(:kotoba
+   (defn- form-rd-value [s :string i :i64] [:ref :form/rd]
+     (let [n (string-byte-length s)
+           j (form-rd-skip s i)]
+       (if (>= j n)
+         (form-rd (form-nil-form) (form-rd-fail))
+         (let [c (string-code-point-at s j)]
+           (cond
+             (= c 40) (let [r (form-rd-items s (inc j) 41)] (form-rd (form-form-seq (form-kids-of (form-rd-form r))) (form-rd-pos r)))
+             (= c 91) (form-rd-items s (inc j) 93)
+             (= c 123) (let [r (form-rd-items s (inc j) 125)] (form-rd (form-form-map (form-kids-of (form-rd-form r))) (form-rd-pos r)))
+             (and (= c 35) (< (inc j) n) (= 123 (string-code-point-at s (inc j))))
+             (let [r (form-rd-items s (+ j 2) 125)] (form-rd (form-form-set (form-kids-of (form-rd-form r))) (form-rd-pos r)))
+             (= c 39) (let [r (form-rd-value s (inc j))] (form-rd (form-call1 "quote" (form-rd-form r)) (form-rd-pos r)))
+             (= c 34) (form-rd-string s j)
+             :else (form-rd-atom s j)))))))
+
+#?(:kotoba
+   (defn- form-edn-form
+     "The one form in TEXT."
+     [text :string] [:ref :form/r]
+     (form-rd-form (form-rd-value text 0))))
+
+
+
+#?(:kotoba
+   (defn profile [] :keyword :component-model/standard32-v1)
+   :default
+   (def profile :component-model/standard32-v1))
+
+
+#?(:kotoba
+   (defn string-encoding [] :keyword :utf8)
+   :default
+   (def string-encoding :utf8))
+
+
+
+#?(:kotoba
+   (defn- fget [m [:ref :form/r] k :keyword] [:ref :form/r] (form-form-get m (form-keyword-form k)))
+   :default
+   (defn- reject [message data]
+     (throw (ex-info message (assoc data :phase :canonical-abi-layout)))))
+
+#?(:kotoba
+   (defn- doc [text :string] [:ref :form/r] (form-edn-form text)))
+
+#?(:kotoba
+   ;; A layout answer is a layout map, or an error marker {:kotoba/error KEYWORD}
+   ;; (the host throws; an aborting call inside a loop is not admitted, so the
+   ;; error travels as a value and the exports abort once).
+   (defn- err [k :keyword] [:ref :form/r]
+     (form-form-map (form-two-forms (form-keyword-form :kotoba/error) (form-keyword-form k)))))
+
+#?(:kotoba
+   (defn- err? [f [:ref :form/r]] :bool
+     (and (form-is-map? f) (form-form-has? f (form-keyword-form :kotoba/error)))))
+
+#?(:kotoba
+   (defn- kw= [f [:ref :form/r] k :keyword] :bool (form-eq f (form-keyword-form k))))
+
+#?(:kotoba
+   (defn- int-of [f [:ref :form/r]] :i64 (form-int-value f)))
+
+#?(:kotoba
+   (defn- assoc-kw [m [:ref :form/r] k :keyword v [:ref :form/r]] [:ref :form/r] (form-assoc-form m (form-keyword-form k) v)))
+
+
+
+#?(:kotoba
+   (defn- align-up [value :i64 alignment :i64] :i64
+     (* alignment (quot (+ value (dec alignment)) alignment)))
+   :default
+   (defn- align-up [value alignment]
+     (* alignment (quot (+ value (dec alignment)) alignment))))
+
+
+
+#?(:kotoba
+   (defn- member? [x [:ref :form/r] xs [:ref :form/r]] :bool
+     (let [n (form-count-of xs)]
+       (loop [i 0]
+         (if (>= i n) false (if (form-eq (form-nth-of xs i) x) true (recur (inc i)))))))
+   :default
+   (declare layout*))
+
+
+
+#?(:kotoba
+   (defn- discriminant-byte-size [case-count :i64] :i64
+     (cond (<= case-count 256) 1
+           (<= case-count 65536) 2
+           :else 4))
+   :default
+   (defn- discriminant-byte-size
+     "In-memory byte width of a variant discriminant for `case-count` cases,
+     mirroring the Component Model spec's `discriminant_type`: u8 up to 256
+     cases, u16 up to 65536, u32 beyond (`variant-case-limit` in
+     `kotoba.kir.value` keeps every admitted variant well under the u8
+     boundary today; the wider cases are implemented for spec fidelity, not
+     because anything in this codebase currently produces them)."
+     [case-count]
+     (cond (<= case-count 256) 1
+           (<= case-count 65536) 2
+           :else 4)))
+
+
+
+#?(:kotoba
+   (defn- join-core-type [a [:ref :form/r] b [:ref :form/r]] [:ref :form/r]
+     (cond (form-eq a b) a
+           (or (and (kw= a :i32) (kw= b :f32)) (and (kw= a :f32) (kw= b :i32))) (form-keyword-form :i32)
+           :else (form-keyword-form :i64)))
+   :default
+   (defn- join-core-type
+     "The Component Model spec's `join`: the single core wasm value type two
+     positions of two different variant cases' flattened payloads must share
+     when they occupy the same flat position. Identical types need no
+     coercion; an i32/f32 mismatch (a scalar/bool case sharing a position with
+     an f32 case) still fits in i32; every other mismatch (anything touching
+     i64 or f64 against a different type) widens to i64. This is intentionally
+     exactly the three-line spec function, not a superset or a subset of it."
+     [a b]
+     (cond (= a b) a
+           (= #{a b} #{:i32 :f32}) :i32
+           :else :i64)))
+
+
+
+#?(:kotoba
+   (defn- flat-of [case-layout [:ref :form/r]] [:ref :form/r] (fget (fget case-layout :layout) :flat))
+   :default
+   (defn- variant-flatten-payload
+     "Fold every case's own flat core-type sequence into one joined sequence,
+     left to right, matching `flatten_variant`'s loop: each case's own flat
+     types are compared position-by-position against whatever the fold has
+     already accumulated there (via `join-core-type`), and any position past
+     the fold's current length is simply appended. This is a component-level
+     flattening (the shape the guest receives as bare core wasm parameters),
+     distinct from the in-memory union layout `variant-layout` computes below
+     for the result area (see docstring there)."
+     [case-layouts]
+     (reduce
+      (fn [flat {:keys [layout]}]
+        (let [case-flat (:flat layout)]
+          (loop [index 0 acc flat]
+            (if (>= index (count case-flat))
+              acc
+              (let [core-type (nth case-flat index)]
+                (recur (inc index)
+                       (if (< index (count acc))
+                         (update acc index join-core-type core-type)
+                         (conj acc core-type))))))))
+      []
+      case-layouts)))
+
+#?(:kotoba
+   ;; Fold every case's own flat core-type sequence into one joined sequence, left
+   ;; to right, position by position; positions past the fold's length are appended.
+   (defn- merge-flat [acc [:ref :form/r] case-flat [:ref :form/r]] [:ref :form/r]
+     (let [n (form-count-of case-flat)]
+       (loop [index 0 acc acc]
+         (if (>= index n)
+           acc
+           (let [core (form-nth-of case-flat index)
+                 m (form-count-of acc)]
              (recur (inc index)
-                    (if (< index (count acc))
-                      (update acc index join-core-type core-type)
-                      (conj acc core-type))))))))
-   []
-   case-layouts))
+                    (if (< index m)
+                      (replace-at acc index (join-core-type (form-nth-of acc index) core))
+                      (form-form-vec (form-append-form (form-kids-of acc) core))))))))))
 
-(defn- variant-layout
-  "Checked Canonical ABI layout for one sealed variant schema: an in-memory
-  union (discriminant byte width from `discriminant-byte-size`, aligned
-  payload area sized to the widest case, per `elem_size_variant`/
-  `alignment_variant` in the Component Model spec) used to plan the
-  indirect-result area, plus a component-level `:flat` core-value sequence
-  ([i32 discriminant] ++ `variant-flatten-payload`) used to plan the wasm
-  core function signature when this variant is a direct parameter or
-  result. Unlike a record, a variant's memory layout and its flat core
-  signature are genuinely different shapes (a union vs. a join), so both
-  are computed and kept side by side on the same layout map rather than
-  reusing one `:flat` for both purposes the way record layouts do."
-  [descriptor schemas visited]
-  (let [identity (second descriptor)
-        schema (get schemas identity)]
-    (when (contains? visited identity)
-      (reject "recursive schema has no bounded Canonical ABI layout"
-              {:descriptor descriptor :identity identity}))
-    (when-not (and (vector? schema) (= :variant (first schema)) (= identity (second schema)))
-      (reject "variant reference has no matching schema identity"
-              {:descriptor descriptor :schema schema}))
-    (let [cases (nth schema 2)
-          case-layouts (mapv (fn [[tag payload-type]]
-                               {:tag tag
-                                :layout (layout* payload-type schemas (conj visited identity))})
-                             cases)
-          discriminant-size (discriminant-byte-size (count cases))
-          payload-alignment (reduce max 1 (map (comp :alignment :layout) case-layouts))
-          payload-offset (align-up discriminant-size payload-alignment)
-          payload-size (reduce max 0 (map (comp :size :layout) case-layouts))
-          alignment (max discriminant-size payload-alignment)]
-      {:descriptor descriptor
-       :identity identity
-       :kind :variant
-       :cases case-layouts
-       :discriminant-size discriminant-size
-       :payload-offset payload-offset
-       :alignment alignment
-       :size (align-up (+ payload-offset payload-size) alignment)
-       :flat (into [:i32] (variant-flatten-payload case-layouts))})))
+#?(:kotoba
+   (defn- replace-at [xs [:ref :form/r] index :i64 x [:ref :form/r]] [:ref :form/r]
+     (let [n (form-count-of xs)]
+       (loop [i 0 out (form-no-forms)]
+         (if (>= i n)
+           (form-form-vec out)
+           (recur (inc i) (form-append-form out (if (= i index) x (form-nth-of xs i)))))))))
 
-(defn- record-layout [descriptor schemas visited]
-  (let [identity (second descriptor)
-        schema (get schemas identity)]
-    (when (contains? visited identity)
-      (reject "recursive schema has no bounded Canonical ABI layout"
-              {:descriptor descriptor :identity identity}))
-    (when-not (and (vector? schema) (= :record (first schema)) (= identity (second schema)))
-      (reject "record reference has no matching schema identity"
-              {:descriptor descriptor :schema schema}))
-    (let [fields (nth schema 2)
-          planned
-          (loop [remaining fields offset 0 alignment 1 result []]
-            (if-let [[field field-type] (first remaining)]
-              (let [field-layout (layout* field-type schemas (conj visited identity))
-                    field-offset (align-up offset (:alignment field-layout))]
-                (recur (next remaining)
-                       (+ field-offset (:size field-layout))
-                       (max alignment (:alignment field-layout))
-                       (conj result {:name field :offset field-offset :layout field-layout})))
-              {:fields result :alignment alignment :end offset}))]
-      {:descriptor descriptor
-       :identity identity
-       :size (align-up (:end planned) (:alignment planned))
-       :alignment (:alignment planned)
-       :flat (vec (mapcat (comp :flat :layout) (:fields planned)))
-       :fields (:fields planned)})))
+#?(:kotoba
+   (defn- variant-flatten-payload [case-layouts [:ref :form/r]] [:ref :form/r]
+     (let [n (form-count-of case-layouts)]
+       (loop [i 0 flat (form-form-vec (form-no-forms))]
+         (if (>= i n)
+           flat
+           (recur (inc i) (merge-flat flat (flat-of (form-nth-of case-layouts i)))))))))
 
-(defn- unit-case-layout
-  "The zero-size, zero-flat-core-values shape for a payload-less case, used
-  only by `option`'s `none` case in this file. No admitted top-level
-  descriptor produces this shape via `layout*` itself -- every real type in
-  this profile carries at least one flat core value and at least one byte of
-  size/alignment -- so it is synthesized locally here rather than routed
-  through `layout*`, exactly the way Component Model spec's own `unit` case
-  needs no payload type of its own."
-  []
-  {:size 0 :alignment 1 :flat []})
 
-(defn- structural-union-layout
-  "Shared discriminant+payload-area math for a structural (non-nominal)
-  union of `case-layouts` (each `{:tag :layout}`, the same shape
-  `variant-layout` builds its own `case-layouts` binding from), reusing
-  `discriminant-byte-size`/`variant-flatten-payload`/`join-core-type`
-  unchanged -- exactly `variant-layout`'s own union-of-cases math, minus the
-  `schemas` lookup, `identity`, and `visited`-set entry a *nominal* schema
-  needs. `option`/`result` are structural, not nominal (parallel to why
-  `:list` carries no schema-table identity of its own): the Component Model
-  spec defines `option<T>`/`result<T, E>` as anonymous type constructors, the
-  same way `list<T>` is, not sealed named types a caller registers once and
-  references by identity thereafter."
-  [case-layouts]
-  (let [discriminant-size (discriminant-byte-size (count case-layouts))
-        payload-alignment (reduce max 1 (map (comp :alignment :layout) case-layouts))
-        payload-offset (align-up discriminant-size payload-alignment)
-        payload-size (reduce max 0 (map (comp :size :layout) case-layouts))
-        alignment (max discriminant-size payload-alignment)]
-    {:discriminant-size discriminant-size
-     :payload-offset payload-offset
-     :alignment alignment
-     :size (align-up (+ payload-offset payload-size) alignment)
-     :flat (into [:i32] (variant-flatten-payload case-layouts))}))
 
-(defn- structural-product-layout
-  "Shared sequential offset/alignment fold for a structural (non-nominal)
-  fixed-length product of `element-layouts` (each an already-computed
-  `layout*` result, in declared positional order), factored out of
-  `record-layout`'s own per-field loop exactly the way `structural-union-layout`
-  above factors out `variant-layout`'s own discriminant/payload math for a
-  structural union -- `tuple` is structural, not nominal (parallel to why
-  `:list`/`:option`/`:result` carry no schema-table identity of their own):
-  the Component Model spec defines `tuple<T1, T2, ...>` as an anonymous type
-  constructor, the same way `list<T>`/`option<T>`/`result<T, E>` are, not a
-  sealed named type a caller registers once and references by identity
-  thereafter.
+#?(:kotoba
+   (defn- max-field [case-layouts [:ref :form/r] k :keyword floor :i64] :i64
+     (let [n (form-count-of case-layouts)]
+       (loop [i 0 m floor]
+         (if (>= i n)
+           m
+           (let [v (int-of (fget (fget (form-nth-of case-layouts i) :layout) k))]
+             (recur (inc i) (if (> v m) v m)))))))
+   :default
+   (defn- variant-layout
+     "Checked Canonical ABI layout for one sealed variant schema: an in-memory
+     union (discriminant byte width from `discriminant-byte-size`, aligned
+     payload area sized to the widest case, per `elem_size_variant`/
+     `alignment_variant` in the Component Model spec) used to plan the
+     indirect-result area, plus a component-level `:flat` core-value sequence
+     ([i32 discriminant] ++ `variant-flatten-payload`) used to plan the wasm
+     core function signature when this variant is a direct parameter or
+     result. Unlike a record, a variant's memory layout and its flat core
+     signature are genuinely different shapes (a union vs. a join), so both
+     are computed and kept side by side on the same layout map rather than
+     reusing one `:flat` for both purposes the way record layouts do."
+     [descriptor schemas visited]
+     (let [identity (second descriptor)
+           schema (get schemas identity)]
+       (when (contains? visited identity)
+         (reject "recursive schema has no bounded Canonical ABI layout"
+                 {:descriptor descriptor :identity identity}))
+       (when-not (and (vector? schema) (= :variant (first schema)) (= identity (second schema)))
+         (reject "variant reference has no matching schema identity"
+                 {:descriptor descriptor :schema schema}))
+       (let [cases (nth schema 2)
+             case-layouts (mapv (fn [[tag payload-type]]
+                                  {:tag tag
+                                   :layout (layout* payload-type schemas (conj visited identity))})
+                                cases)
+             discriminant-size (discriminant-byte-size (count cases))
+             payload-alignment (reduce max 1 (map (comp :alignment :layout) case-layouts))
+             payload-offset (align-up discriminant-size payload-alignment)
+             payload-size (reduce max 0 (map (comp :size :layout) case-layouts))
+             alignment (max discriminant-size payload-alignment)]
+         {:descriptor descriptor
+          :identity identity
+          :kind :variant
+          :cases case-layouts
+          :discriminant-size discriminant-size
+          :payload-offset payload-offset
+          :alignment alignment
+          :size (align-up (+ payload-offset payload-size) alignment)
+          :flat (into [:i32] (variant-flatten-payload case-layouts))}))))
 
-  The result deliberately reuses the key name `:fields` (each entry
-  `{:offset :layout}`, positional -- no `:name`, unlike a record field's own
-  `{:name :offset :layout}`) rather than a bespoke key such as `:elements`:
-  `layout-leaves`'s existing nested-record recursion clause,
-  `(contains? layout :fields)`, only ever destructures `:offset`/`:layout`
-  from each entry and never depends on `:name` being present, so a tuple's
-  own layout is recursed into by that clause for free with **zero changes**
-  to `layout-leaves` (verified directly, see Evidence) -- exactly the
-  `record-layout`/`variant-layout`/`list-layout`/`option-layout`/
-  `result-layout` precedent of reusing an existing generic call site rather
-  than adding a new one. This reuse is the correct one (not a coincidental
-  key-name collision): a tuple, like a nested record and unlike a
-  variant/option/result, is a pure fixed-offset product with no discriminant,
-  so every element's own absolute offset is already the final answer for
-  flattening, the same reason a nested record's own `:fields` are recursed
-  into today."
-  [element-layouts]
-  (let [planned
-        (loop [remaining element-layouts offset 0 alignment 1 result []]
-          (if-let [element-layout (first remaining)]
-            (let [element-offset (align-up offset (:alignment element-layout))]
-              (recur (next remaining)
-                     (+ element-offset (:size element-layout))
-                     (max alignment (:alignment element-layout))
-                     (conj result {:offset element-offset :layout element-layout})))
-            {:fields result :alignment alignment :end offset}))]
-    {:size (align-up (:end planned) (:alignment planned))
-     :alignment (:alignment planned)
-     :flat (vec (mapcat (comp :flat :layout) (:fields planned)))
-     :fields (:fields planned)}))
+#?(:kotoba
+   (defn- prepend-i32 [flat [:ref :form/r]] [:ref :form/r]
+     (form-form-vec (form-cons-onto (form-keyword-form :i32) (form-kids-of flat)))))
 
-(defn- tuple-layout
-  "Checked Canonical ABI layout for a structural `[:tuple item-descriptor-1
-  item-descriptor-2 ... item-descriptor-n]` (the Component Model's
-  `tuple<T1, T2, ...>`): sugar over the same sequential offset/alignment fold
-  `record-layout` uses for a sealed record's fields, specialized to a
-  positional (unnamed), non-nominal fixed-length product -- structurally
-  exactly an anonymous record. `item-layouts` is kept alongside on the
-  returned map (the plain ordered layout sequence, no offset annotation),
-  exactly the reason `list-layout`/`option-layout`/`result-layout` keep their
-  own item/ok/err layout(s) alongside: so a caller can inspect any element's
-  own shape without re-deriving it from the descriptor or walking `:fields`.
+#?(:kotoba
+   ;; The union-of-cases math shared by variant / option / result.
+   (defn- union-layout [case-layouts [:ref :form/r]] [:ref :form/r]
+     (let [discriminant-size (discriminant-byte-size (form-count-of case-layouts))
+           payload-alignment (max-field case-layouts :alignment 1)
+           payload-offset (align-up discriminant-size payload-alignment)
+           payload-size (max-field case-layouts :size 0)
+           alignment (if (> discriminant-size payload-alignment) discriminant-size payload-alignment)
+           m0 (form-form-map (form-no-forms))
+           m1 (assoc-kw m0 :discriminant-size (form-int-form discriminant-size))
+           m2 (assoc-kw m1 :payload-offset (form-int-form payload-offset))
+           m3 (assoc-kw m2 :alignment (form-int-form alignment))
+           m4 (assoc-kw m3 :size (form-int-form (align-up (+ payload-offset payload-size) alignment)))]
+       (assoc-kw m4 :flat (prepend-i32 (variant-flatten-payload case-layouts))))))
 
-  Item count is bounded by `value/canonical-tuple-item-limit` (32, see that
-  constant's own docstring for why this magnitude and why its own name). At
-  least one item type is required -- an empty tuple has no admitted shape in
-  this slice, exactly as a sealed record requires at least one field
-  (`kotoba.kir.value`'s own `validate-value-type!` record-field check).
+#?(:kotoba
+   (defn- case-entry [tag [:ref :form/r] layout [:ref :form/r]] [:ref :form/r]
+     (assoc-kw (assoc-kw (form-form-map (form-no-forms)) :tag tag) :layout layout)))
 
-  Each item descriptor may be any already-admitted Canonical ABI descriptor,
-  including another `:tuple`/`:option`/`:result`/`:list` -- recursively
-  re-entering `layout*` with `visited` threaded straight through unchanged (a
-  tuple carries no identity of its own to add), exactly as list/option/result
-  already do. Nesting a tuple inside a tuple is not rejected (contrast ADR
-  0065's deliberate list-of-list rejection): every level is still a single
-  fixed-size, fixed-offset product with no independent runtime-variable
-  length or stride of its own, so there is no genuinely-harder shape here to
-  guard against, the same reasoning ADR 0068 already gave for not rejecting
-  option-of-option/result-of-result."
-  [descriptor schemas visited]
-  (let [item-descriptors (vec (rest descriptor))]
-    (when (empty? item-descriptors)
-      (reject "tuple descriptor must have at least one item type"
-              {:descriptor descriptor}))
-    (when (> (count item-descriptors) value/canonical-tuple-item-limit)
-      (reject "tuple item count exceeds bound"
-              {:descriptor descriptor
-               :count (count item-descriptors)
-               :max value/canonical-tuple-item-limit}))
-    (let [item-layouts (mapv #(layout* % schemas visited) item-descriptors)]
-      (merge {:descriptor descriptor
-              :kind :tuple
-              :item-layouts item-layouts}
-             (structural-product-layout item-layouts)))))
+#?(:kotoba
+   ;; the first error among a vector of layouts, else nil
+   (defn- first-error [layouts [:ref :form/r]] [:ref :form/r]
+     (let [n (form-count-of layouts)]
+       (loop [i 0]
+         (if (>= i n)
+           (form-nil-form)
+           (if (err? (form-nth-of layouts i)) (form-nth-of layouts i) (recur (inc i))))))))
 
-(defn- option-layout
-  "Checked Canonical ABI layout for a structural `[:option item-descriptor]`
-  (the Component Model's `option<T>`): sugar over the same union-of-cases
-  math `variant-layout` uses, specialized to exactly the two cases
-  `option<T>` always has -- a payload-less `none` (`unit-case-layout`) and a
-  `some` case carrying `item-descriptor`'s own recursive `layout*` result.
-  `item-layout` is kept alongside on the returned map (not discarded once
-  folded into `:flat`), exactly the reason `list-layout` keeps its own
-  `:item-layout` alongside: so a caller can derive the payload area's shape
-  or recurse into a nested record/variant/list/option/result item without
-  re-deriving it from the descriptor. `item-descriptor` may be any
-  already-admitted Canonical ABI descriptor, including another `:option`,
-  `:result`, or `:list` -- unlike `[:list [:list ...]]`, nesting an option or
-  result inside another one is not a genuinely harder shape (both sides are
-  still a single fixed-size union payload area, exactly the same recursive
-  shape a variant case whose own payload is another variant already has),
-  so no analogous rejection applies here. A `visited` guard is threaded
-  straight through into `item-descriptor`'s own `layout*` call unchanged, so
-  an item type reaching back to an *enclosing* record/variant's own identity
-  (including by way of an option) is still caught by that record/variant's
-  own existing recursion guard, exactly as `list-layout` already does."
-  [descriptor schemas visited]
-  (when-not (= 2 (count descriptor))
-    (reject "option descriptor must be exactly [:option item-descriptor]"
-            {:descriptor descriptor}))
-  (let [item-descriptor (second descriptor)
-        item-layout (layout* item-descriptor schemas visited)
-        case-layouts [{:tag :none :layout (unit-case-layout)}
-                      {:tag :some :layout item-layout}]]
-    (merge {:descriptor descriptor
-            :kind :option
-            :item-layout item-layout
-            :cases case-layouts
-            ;; Declarative obligation for a future codegen consumer, exactly
-            ;; the same "documents an obligation, nothing in this repository
-            ;; reads it programmatically" contract every other :validation
-            ;; tag in this file already has (confirmed by grep, see ADR).
-            ;; `variant-layout` itself carries no analogous tag for its own
-            ;; discriminant today -- a pre-existing gap this ADR does not
-            ;; also need to close, since it is out of this task's scope.
-            :validation [:bounded-discriminant]}
-           (structural-union-layout case-layouts))))
+#?(:kotoba
+   (defn- variant-cases [cases [:ref :form/r] schemas [:ref :form/r] visited [:ref :form/r] identity [:ref :form/r]] [:ref :form/r]
+     (let [n (form-count-of cases)
+           visited2 (form-form-vec (form-append-form (form-kids-of visited) identity))]
+       (loop [i 0 out (form-no-forms)]
+         (if (>= i n)
+           (form-form-vec out)
+           (let [c (form-nth-of cases i)
+                 l (layout* (form-nth-of c 1) schemas visited2)]
+             (if (err? l)
+               l
+               (recur (inc i) (form-append-form out (case-entry (form-nth-of c 0) l))))))))))
 
-(defn- result-layout
-  "Checked Canonical ABI layout for a structural `[:result ok-descriptor
-  err-descriptor]` (the Component Model's `result<T, E>`): sugar over the
-  same union-of-cases math `variant-layout` uses, specialized to exactly the
-  two cases `result<T, E>` always has -- `ok` carrying `ok-descriptor` and
-  `err` carrying `err-descriptor`. Both payload types are required (matching
-  `kotoba.kir.value`'s own domain-level `[:result T E]` descriptor
-  shape at `validate-value-type!`, which also always requires both types
-  present); the Component Model spec's optional-payload `result<>`/
-  `result<T>`/`result<_, E>` shapes are not admitted by this slice, matching
-  this task's own scope boundary. `ok-layout`/`err-layout` are kept
-  alongside on the returned map for the same reason `list-layout` keeps its
-  own `:item-layout` and `option-layout` keeps its own `:item-layout`: so a
-  caller can recurse into either payload's own shape without re-deriving it
-  from the descriptor. Either descriptor may be any already-admitted
-  Canonical ABI descriptor, including another `:option`/`:result`/`:list`;
-  see `option-layout`'s docstring for why no list-of-list-style rejection
-  applies to nesting a union inside a union. `visited` is threaded straight
-  through into both payload types' own `layout*` calls unchanged, exactly as
-  `option-layout`/`list-layout` already do."
-  [descriptor schemas visited]
-  (when-not (= 3 (count descriptor))
-    (reject "result descriptor must be exactly [:result ok-descriptor err-descriptor]"
-            {:descriptor descriptor}))
-  (let [ok-descriptor (second descriptor)
-        err-descriptor (nth descriptor 2)
-        ok-layout (layout* ok-descriptor schemas visited)
-        err-layout (layout* err-descriptor schemas visited)
-        case-layouts [{:tag :ok :layout ok-layout}
-                      {:tag :err :layout err-layout}]]
-    (merge {:descriptor descriptor
-            :kind :result
-            :ok-layout ok-layout
-            :err-layout err-layout
-            :cases case-layouts
-            :validation [:bounded-discriminant]}
-           (structural-union-layout case-layouts))))
+#?(:kotoba
+   (defn- variant-layout [descriptor [:ref :form/r] schemas [:ref :form/r] visited [:ref :form/r]] [:ref :form/r]
+     (let [identity (form-nth-of descriptor 1)
+           schema (form-form-get schemas identity)]
+       (cond
+         (member? identity visited) (err :recursive-schema)
+         (not (and (form-is-vec? schema) (kw= (form-first-of schema) :variant) (form-eq identity (form-nth-of schema 1))))
+         (err :variant-reference-has-no-schema)
+         :else
+         (let [case-layouts (variant-cases (form-nth-of schema 2) schemas visited identity)]
+           (if (err? case-layouts)
+             case-layouts
+             (let [u (union-layout case-layouts)
+                   m0 (form-form-map (form-no-forms))
+                   m1 (assoc-kw m0 :descriptor descriptor)
+                   m2 (assoc-kw m1 :identity identity)
+                   m3 (assoc-kw m2 :kind (form-keyword-form :variant))
+                   m4 (assoc-kw m3 :cases case-layouts)]
+               (merge-maps m4 u))))))))
 
-(defn- list-layout
-  "Checked Canonical ABI layout for a bounded `[:list item-descriptor]`: a
-  pointer+length pair in linear memory, the same two-core-value `[:i32 :i32]`
-  shape ADR 0040/0041 already gave bare `string`/`keyword` parameters and
-  results, generalized from a byte-addressed buffer (length in UTF-8 bytes)
-  to an element-addressed one (length in items). `item-layout` is the item
-  descriptor's own recursive `layout*` result, kept alongside (not flattened
-  away) so a caller can derive the buffer's per-element stride
-  (`align-up` of the item's own `:size` to its own `:alignment`) and recurse
-  into a nested record/variant item without re-deriving its shape from the
-  descriptor -- exactly how a record field's own nested `:fields`/`:cases`
-  layout is kept alongside today. Item count is bounded by
-  `value/canonical-list-item-limit`, exposed here as `:max-items` (the same
-  role `:max-bytes` plays for a bounded string/keyword) so callers can tell a
-  list leaf apart from a plain scalar leaf or a string/keyword leaf without
-  re-deriving it from the descriptor; the corresponding `:validation` tag is
-  `:bounded-item-count`, alongside the same `:checked-pointer-range` tag
-  every other indirect (pointer-bearing) leaf already carries. Nested lists
-  additionally share `value/canonical-list-total-item-limit` across the
-  complete active graph; exposing it as `:max-total-items` prevents a caller
-  from accidentally multiplying the per-node bound at each depth.
+#?(:kotoba
+   (defn- merge-maps [a [:ref :form/r] b [:ref :form/r]] [:ref :form/r]
+     (let [xs (form-kids-of b)
+           n (vector-count xs)]
+       (loop [j 0 m a]
+         (if (>= (+ j 1) n)
+           m
+           (recur (+ j 2) (form-assoc-form m (typed-list-nth [:list [:ref :form/r]] xs j) (typed-list-nth [:list [:ref :form/r]] xs (+ j 1)))))))))
 
-  An item type that is itself a recursive nominal schema (a record/variant that
-  reaches back to an identity already in `visited`, including by way of a
-  list) is still caught by `record-layout`/`variant-layout`'s own existing
-  recursion guard: `visited` is threaded straight through unchanged, exactly
-  as a record field or variant case payload's own type already does."
-  [descriptor schemas visited]
-  (let [item-descriptor (second descriptor)
-        item-layout (layout* item-descriptor schemas visited)]
-      {:descriptor descriptor
-       :size 8
-       :alignment 4
-       :flat [:i32 :i32]
-       :item-layout item-layout
-       :max-items value/canonical-list-item-limit
-       :max-total-items value/canonical-list-total-item-limit
-       :validation [:checked-pointer-range :bounded-item-count
-                    :bounded-total-item-count]}))
 
-(defn- layout* [descriptor schemas visited]
-  (cond
-    (= descriptor :i64) {:descriptor :i64 :size 8 :alignment 8 :flat [:i64]}
-    (= descriptor :f32) {:descriptor :f32 :size 4 :alignment 4 :flat [:f32]}
-    (= descriptor :f64) {:descriptor :f64 :size 8 :alignment 8 :flat [:f64]}
-    (= descriptor :bool) {:descriptor :bool :size 1 :alignment 1 :flat [:i32]
-                          :validation [:canonical-bool]}
-    (= descriptor :string) {:descriptor :string
-                            :size 8
-                            :alignment 4
-                            :flat [:i32 :i32]
-                            :encoding string-encoding
-                            :max-bytes value/string-value-byte-limit
-                            :validation [:checked-pointer-range :valid-utf8]}
-    (= descriptor :keyword) {:descriptor :keyword
-                             :size 8
-                             :alignment 4
-                             :flat [:i32 :i32]
-                             :encoding string-encoding
-                             :max-bytes value/keyword-value-byte-limit
-                             :validation [:checked-pointer-range :valid-utf8]}
-    (= descriptor :symbol) {:descriptor :symbol
-                            :size 8
-                            :alignment 4
-                            :flat [:i32 :i32]
-                            :encoding string-encoding
-                            :max-bytes value/symbol-value-byte-limit
-                            :validation [:checked-pointer-range :valid-utf8
-                                         :valid-symbol-source]}
-    (= descriptor :vector-i64)
-    (assoc (list-layout [:list :i64] schemas visited)
-           :descriptor :vector-i64)
-    (= descriptor :vector-f64)
-    (assoc (list-layout [:list :f64] schemas visited)
-           :descriptor :vector-f64)
-    (and (vector? descriptor) (= :ref (first descriptor)))
-    (let [schema (get schemas (second descriptor))]
-      (if (and (vector? schema) (= :variant (first schema)))
-        (variant-layout descriptor schemas visited)
-        (record-layout descriptor schemas visited)))
-    (and (vector? descriptor) (= :record (first descriptor)))
-    (let [identity (second descriptor)]
-      (when-not (= descriptor (get schemas identity))
-        (reject "inline record differs from sealed schema identity"
-                {:descriptor descriptor :schema (get schemas identity)}))
-      (assoc (record-layout [:ref identity] schemas visited) :descriptor descriptor))
-    (and (vector? descriptor) (= :variant (first descriptor)))
-    (let [identity (second descriptor)]
-      (when-not (= descriptor (get schemas identity))
-        (reject "inline variant differs from sealed schema identity"
-                {:descriptor descriptor :schema (get schemas identity)}))
-      (assoc (variant-layout [:ref identity] schemas visited) :descriptor descriptor))
-    (and (vector? descriptor) (= :list (first descriptor)))
-    (list-layout descriptor schemas visited)
-    ;; Sets lower as Component Model lists (same pointer+length ABI). Item
-    ;; count uses typed-set-item-limit (32), not the list bound (16384) —
-    ;; matching kotoba.kir.value's set domain. Required for log-v1 fields/
-    ;; entries which are [:set record] in the capability kit.
-    (and (vector? descriptor) (= :set (first descriptor)))
-    (assoc (list-layout [:list (second descriptor)] schemas visited)
-           :descriptor descriptor
-           :max-items value/typed-set-item-limit
-           :max-total-items value/typed-set-item-limit)
-    (and (vector? descriptor) (= :option (first descriptor)))
-    (option-layout descriptor schemas visited)
-    (and (vector? descriptor) (= :result (first descriptor)))
-    (result-layout descriptor schemas visited)
-    (and (vector? descriptor) (= :tuple (first descriptor)))
-    (tuple-layout descriptor schemas visited)
-    :else
-    (reject "descriptor has no qualified Canonical ABI layout"
-            {:descriptor descriptor})))
 
-(defn layout
-  "Return the closed standard32 memory and flat-value layout for one admitted
-  descriptor. Aggregate descriptors are added only with matching lift/lower
-  implementations."
-  ([descriptor] (layout descriptor {}))
-  ([descriptor schemas] (layout* descriptor schemas #{})))
+#?(:kotoba
+   (defn- plan-fields [fields [:ref :form/r] schemas [:ref :form/r] visited2 [:ref :form/r]] [:ref :form/r]
+     ;; answers {:fields [...] :alignment n :end n} or an error marker
+     (let [n (form-count-of fields)]
+       (loop [i 0 offset 0 alignment 1 result (form-no-forms)]
+         (if (>= i n)
+           (assoc-kw (assoc-kw (assoc-kw (form-form-map (form-no-forms)) :fields (form-form-vec result))
+                               :alignment (form-int-form alignment))
+                     :end (form-int-form offset))
+           (let [f (form-nth-of fields i)
+                 fl (layout* (form-nth-of f 1) schemas visited2)]
+             (if (err? fl)
+               fl
+               (let [field-offset (align-up offset (int-of (fget fl :alignment)))
+                     a (int-of (fget fl :alignment))]
+                 (recur (inc i)
+                        (+ field-offset (int-of (fget fl :size)))
+                        (if (> a alignment) a alignment)
+                        (form-append-form result
+                                          (assoc-kw (assoc-kw (assoc-kw (form-form-map (form-no-forms)) :name (form-nth-of f 0))
+                                                              :offset (form-int-form field-offset))
+                                                    :layout fl))))))))))
+   :default
+   (defn- record-layout [descriptor schemas visited]
+     (let [identity (second descriptor)
+           schema (get schemas identity)]
+       (when (contains? visited identity)
+         (reject "recursive schema has no bounded Canonical ABI layout"
+                 {:descriptor descriptor :identity identity}))
+       (when-not (and (vector? schema) (= :record (first schema)) (= identity (second schema)))
+         (reject "record reference has no matching schema identity"
+                 {:descriptor descriptor :schema schema}))
+       (let [fields (nth schema 2)
+             planned
+             (loop [remaining fields offset 0 alignment 1 result []]
+               (if-let [[field field-type] (first remaining)]
+                 (let [field-layout (layout* field-type schemas (conj visited identity))
+                       field-offset (align-up offset (:alignment field-layout))]
+                   (recur (next remaining)
+                          (+ field-offset (:size field-layout))
+                          (max alignment (:alignment field-layout))
+                          (conj result {:name field :offset field-offset :layout field-layout})))
+                 {:fields result :alignment alignment :end offset}))]
+         {:descriptor descriptor
+          :identity identity
+          :size (align-up (:end planned) (:alignment planned))
+          :alignment (:alignment planned)
+          :flat (vec (mapcat (comp :flat :layout) (:fields planned)))
+          :fields (:fields planned)}))))
 
-(defn layout-leaves
-  "Flatten one record layout (as returned by `layout`) into an ordered list
-  of leaves, in the same left-to-right depth-first order as the layout's own
-  `:flat` vector. A field whose own layout is itself a nested record layout
-  (that is, it carries a `:fields` key) is recursed into so every nested leaf
-  gets its own absolute store/load offset; this is how one level of nested
-  aggregate lowering reuses the same flat-scalar codegen as a plain record.
-  A field whose own layout is a bounded `tuple` (also carries a `:fields` key,
-  `structural-product-layout`'s own positional `{:offset :layout}` entries)
-  is recursed into by this same clause with no dedicated branch of its own:
-  a tuple is a pure fixed-offset product exactly like a nested record, so
-  every element's own absolute offset is already the final answer for
-  flattening, unlike a list/option/result whose payload interpretation is
-  either runtime-length (list) or discriminant-gated (option/result).
-  A field whose own layout is a bounded `string`/`keyword` (carries a
-  `:max-bytes` key, the same pointer+length linear-memory shape ADR 0040/0041
-  already gave bare string parameters/results) is exposed as
-  `{:offset :descriptor :max-bytes}` instead of the plain scalar leaf's
-  `{:offset :descriptor}`, so callers can tell a two-core-value pointer+length
-  leaf from a one-core-value scalar leaf without re-deriving it from the
-  descriptor. A field whose own layout is a bounded `list` (carries a
-  `:max-items` key, the pointer+length shape `list-layout` above gives a
-  bounded `[:list ...]`) is likewise exposed as its own leaf shape,
-  `{:offset :descriptor :max-items :item-layout}`, rather than being
-  recursed into the way a nested record's `:fields` are: a list's own items
-  live in a separately-addressed buffer at a length only known at runtime,
-  not at a further fixed offset inside this record's own layout, so there is
-  nothing further to flatten here -- `:item-layout` is carried on the leaf
-  itself so a caller can still derive the item stride/shape without
-  re-deriving it from the descriptor. Every consumer must still bound
-  nesting depth before calling this (`layout` itself only rejects unbounded
-  recursive schemas, not depth generally)."
-  ([record-layout] (layout-leaves record-layout 0))
-  ([record-layout base-offset]
-   (vec
-    (mapcat (fn [{:keys [offset layout]}]
-              (let [absolute (+ base-offset offset)]
-                (cond
-                  (contains? layout :fields)
-                  (layout-leaves layout absolute)
+#?(:kotoba
+   (defn- flats-of-fields [fields [:ref :form/r]] [:ref :form/r]
+     (let [n (form-count-of fields)]
+       (loop [i 0 acc (form-no-forms)]
+         (if (>= i n)
+           (form-form-vec acc)
+           (recur (inc i) (form-append-many acc (form-kids-of (fget (fget (form-nth-of fields i) :layout) :flat)))))))))
 
-                  (contains? layout :max-bytes)
-                  [{:offset absolute :descriptor (:descriptor layout)
-                    :max-bytes (:max-bytes layout)}]
+#?(:kotoba
+   (defn- record-layout [descriptor [:ref :form/r] schemas [:ref :form/r] visited [:ref :form/r]] [:ref :form/r]
+     (let [identity (form-nth-of descriptor 1)
+           schema (form-form-get schemas identity)]
+       (cond
+         (member? identity visited) (err :recursive-schema)
+         (not (and (form-is-vec? schema) (kw= (form-first-of schema) :record) (form-eq identity (form-nth-of schema 1))))
+         (err :record-reference-has-no-schema)
+         :else
+         (let [planned (plan-fields (form-nth-of schema 2) schemas (form-form-vec (form-append-form (form-kids-of visited) identity)))]
+           (if (err? planned)
+             planned
+             (let [alignment (int-of (fget planned :alignment))
+                   m0 (form-form-map (form-no-forms))
+                   m1 (assoc-kw m0 :descriptor descriptor)
+                   m2 (assoc-kw m1 :identity identity)
+                   m3 (assoc-kw m2 :size (form-int-form (align-up (int-of (fget planned :end)) alignment)))
+                   m4 (assoc-kw m3 :alignment (form-int-form alignment))
+                   m5 (assoc-kw m4 :flat (flats-of-fields (fget planned :fields)))]
+               (assoc-kw m5 :fields (fget planned :fields)))))))))
 
-                  (contains? layout :max-items)
-                  [{:offset absolute :descriptor (:descriptor layout)
-                    :max-items (:max-items layout)
-                    :max-total-items (:max-total-items layout)
-                    :item-layout (:item-layout layout)}]
 
-                  :else
-                  [{:offset absolute :descriptor (:descriptor layout)}])))
-            (:fields record-layout)))))
 
-(defn export-plan
-  "Plan the standard32 core signature and result-area contract for one KIR
-  export. Multi-flat results use the Canonical ABI indirect-result convention."
-  ([function] (export-plan function {}))
-  ([{:keys [name params param-types result]} schemas]
-  (when-not (= (count params) (count param-types))
-    (reject "parameter names and types differ in arity"
-            {:function name :params (count params) :types (count param-types)}))
-  (let [parameter-layouts (mapv #(layout % schemas) param-types)
-        result-layout (layout result schemas)
-        result-flat (:flat result-layout)
-        indirect-result? (> (count result-flat) 1)]
-    {:profile profile
-     :function name
-     :parameters (mapv (fn [parameter abi-layout]
-                         {:name parameter :layout abi-layout})
-                       params parameter-layouts)
-     :core-params (vec (mapcat :flat parameter-layouts))
-     :result-layout result-layout
-     :indirect-result? indirect-result?
-     :core-results (if indirect-result? [:i32] result-flat)
-     :post-return-params (if indirect-result? [:i32] result-flat)})))
+#?(:kotoba
+   (defn- unit-case-layout [] [:ref :form/r]
+     (doc "{:size 0 :alignment 1 :flat []}"))
+   :default
+   (defn- unit-case-layout
+     "The zero-size, zero-flat-core-values shape for a payload-less case, used
+     only by `option`'s `none` case in this file. No admitted top-level
+     descriptor produces this shape via `layout*` itself -- every real type in
+     this profile carries at least one flat core value and at least one byte of
+     size/alignment -- so it is synthesized locally here rather than routed
+     through `layout*`, exactly the way Component Model spec's own `unit` case
+     needs no payload type of its own."
+     []
+     {:size 0 :alignment 1 :flat []}))
+
+
+
+#?(:kotoba
+   (defn- structural-union-layout [case-layouts [:ref :form/r]] [:ref :form/r] (union-layout case-layouts))
+   :default
+   (defn- structural-union-layout
+     "Shared discriminant+payload-area math for a structural (non-nominal)
+     union of `case-layouts` (each `{:tag :layout}`, the same shape
+     `variant-layout` builds its own `case-layouts` binding from), reusing
+     `discriminant-byte-size`/`variant-flatten-payload`/`join-core-type`
+     unchanged -- exactly `variant-layout`'s own union-of-cases math, minus the
+     `schemas` lookup, `identity`, and `visited`-set entry a *nominal* schema
+     needs. `option`/`result` are structural, not nominal (parallel to why
+     `:list` carries no schema-table identity of its own): the Component Model
+     spec defines `option<T>`/`result<T, E>` as anonymous type constructors, the
+     same way `list<T>` is, not sealed named types a caller registers once and
+     references by identity thereafter."
+     [case-layouts]
+     (let [discriminant-size (discriminant-byte-size (count case-layouts))
+           payload-alignment (reduce max 1 (map (comp :alignment :layout) case-layouts))
+           payload-offset (align-up discriminant-size payload-alignment)
+           payload-size (reduce max 0 (map (comp :size :layout) case-layouts))
+           alignment (max discriminant-size payload-alignment)]
+       {:discriminant-size discriminant-size
+        :payload-offset payload-offset
+        :alignment alignment
+        :size (align-up (+ payload-offset payload-size) alignment)
+        :flat (into [:i32] (variant-flatten-payload case-layouts))})))
+
+
+
+#?(:kotoba
+   (defn- plan-elements [element-layouts [:ref :form/r]] [:ref :form/r]
+     (let [n (form-count-of element-layouts)]
+       (loop [i 0 offset 0 alignment 1 result (form-no-forms)]
+         (if (>= i n)
+           (assoc-kw (assoc-kw (assoc-kw (form-form-map (form-no-forms)) :fields (form-form-vec result))
+                               :alignment (form-int-form alignment))
+                     :end (form-int-form offset))
+           (let [el (form-nth-of element-layouts i)
+                 a (int-of (fget el :alignment))
+                 element-offset (align-up offset a)]
+             (recur (inc i)
+                    (+ element-offset (int-of (fget el :size)))
+                    (if (> a alignment) a alignment)
+                    (form-append-form result
+                                      (assoc-kw (assoc-kw (form-form-map (form-no-forms)) :offset (form-int-form element-offset))
+                                                :layout el))))))))
+   :default
+   (defn- structural-product-layout
+     "Shared sequential offset/alignment fold for a structural (non-nominal)
+     fixed-length product of `element-layouts` (each an already-computed
+     `layout*` result, in declared positional order), factored out of
+     `record-layout`'s own per-field loop exactly the way `structural-union-layout`
+     above factors out `variant-layout`'s own discriminant/payload math for a
+     structural union -- `tuple` is structural, not nominal (parallel to why
+     `:list`/`:option`/`:result` carry no schema-table identity of their own):
+     the Component Model spec defines `tuple<T1, T2, ...>` as an anonymous type
+     constructor, the same way `list<T>`/`option<T>`/`result<T, E>` are, not a
+     sealed named type a caller registers once and references by identity
+     thereafter.
+
+     The result deliberately reuses the key name `:fields` (each entry
+     `{:offset :layout}`, positional -- no `:name`, unlike a record field's own
+     `{:name :offset :layout}`) rather than a bespoke key such as `:elements`:
+     `layout-leaves`'s existing nested-record recursion clause,
+     `(contains? layout :fields)`, only ever destructures `:offset`/`:layout`
+     from each entry and never depends on `:name` being present, so a tuple's
+     own layout is recursed into by that clause for free with **zero changes**
+     to `layout-leaves` (verified directly, see Evidence) -- exactly the
+     `record-layout`/`variant-layout`/`list-layout`/`option-layout`/
+     `result-layout` precedent of reusing an existing generic call site rather
+     than adding a new one. This reuse is the correct one (not a coincidental
+     key-name collision): a tuple, like a nested record and unlike a
+     variant/option/result, is a pure fixed-offset product with no discriminant,
+     so every element's own absolute offset is already the final answer for
+     flattening, the same reason a nested record's own `:fields` are recursed
+     into today."
+     [element-layouts]
+     (let [planned
+           (loop [remaining element-layouts offset 0 alignment 1 result []]
+             (if-let [element-layout (first remaining)]
+               (let [element-offset (align-up offset (:alignment element-layout))]
+                 (recur (next remaining)
+                        (+ element-offset (:size element-layout))
+                        (max alignment (:alignment element-layout))
+                        (conj result {:offset element-offset :layout element-layout})))
+               {:fields result :alignment alignment :end offset}))]
+       {:size (align-up (:end planned) (:alignment planned))
+        :alignment (:alignment planned)
+        :flat (vec (mapcat (comp :flat :layout) (:fields planned)))
+        :fields (:fields planned)})))
+
+#?(:kotoba
+   (defn- structural-product-layout [element-layouts [:ref :form/r]] [:ref :form/r]
+     (let [planned (plan-elements element-layouts)
+           alignment (int-of (fget planned :alignment))
+           m0 (form-form-map (form-no-forms))
+           m1 (assoc-kw m0 :size (form-int-form (align-up (int-of (fget planned :end)) alignment)))
+           m2 (assoc-kw m1 :alignment (form-int-form alignment))
+           m3 (assoc-kw m2 :flat (flats-of-fields (fget planned :fields)))]
+       (assoc-kw m3 :fields (fget planned :fields)))))
+
+
+
+#?(:kotoba
+   (defn- layouts-of [descriptors [:list [:ref :form/r]] schemas [:ref :form/r] visited [:ref :form/r]] [:ref :form/r]
+     ;; each descriptor's layout in order, or the first error
+     (let [n (vector-count descriptors)]
+       (loop [i 0 out (form-no-forms)]
+         (if (>= i n)
+           (form-form-vec out)
+           (let [l (layout* (typed-list-nth [:list [:ref :form/r]] descriptors i) schemas visited)]
+             (if (err? l) l (recur (inc i) (form-append-form out l))))))))
+   :default
+   (defn- tuple-layout
+     "Checked Canonical ABI layout for a structural `[:tuple item-descriptor-1
+     item-descriptor-2 ... item-descriptor-n]` (the Component Model's
+     `tuple<T1, T2, ...>`): sugar over the same sequential offset/alignment fold
+     `record-layout` uses for a sealed record's fields, specialized to a
+     positional (unnamed), non-nominal fixed-length product -- structurally
+     exactly an anonymous record. `item-layouts` is kept alongside on the
+     returned map (the plain ordered layout sequence, no offset annotation),
+     exactly the reason `list-layout`/`option-layout`/`result-layout` keep their
+     own item/ok/err layout(s) alongside: so a caller can inspect any element's
+     own shape without re-deriving it from the descriptor or walking `:fields`.
+
+     Item count is bounded by `value/canonical-tuple-item-limit` (32, see that
+     constant's own docstring for why this magnitude and why its own name). At
+     least one item type is required -- an empty tuple has no admitted shape in
+     this slice, exactly as a sealed record requires at least one field
+     (`kotoba.kir.value`'s own `validate-value-type!` record-field check).
+
+     Each item descriptor may be any already-admitted Canonical ABI descriptor,
+     including another `:tuple`/`:option`/`:result`/`:list` -- recursively
+     re-entering `layout*` with `visited` threaded straight through unchanged (a
+     tuple carries no identity of its own to add), exactly as list/option/result
+     already do. Nesting a tuple inside a tuple is not rejected (contrast ADR
+     0065's deliberate list-of-list rejection): every level is still a single
+     fixed-size, fixed-offset product with no independent runtime-variable
+     length or stride of its own, so there is no genuinely-harder shape here to
+     guard against, the same reasoning ADR 0068 already gave for not rejecting
+     option-of-option/result-of-result."
+     [descriptor schemas visited]
+     (let [item-descriptors (vec (rest descriptor))]
+       (when (empty? item-descriptors)
+         (reject "tuple descriptor must have at least one item type"
+                 {:descriptor descriptor}))
+       (when (> (count item-descriptors) value/canonical-tuple-item-limit)
+         (reject "tuple item count exceeds bound"
+                 {:descriptor descriptor
+                  :count (count item-descriptors)
+                  :max value/canonical-tuple-item-limit}))
+       (let [item-layouts (mapv #(layout* % schemas visited) item-descriptors)]
+         (merge {:descriptor descriptor
+                 :kind :tuple
+                 :item-layouts item-layouts}
+                (structural-product-layout item-layouts))))))
+
+#?(:kotoba
+   (defn- tuple-layout [descriptor [:ref :form/r] schemas [:ref :form/r] visited [:ref :form/r]] [:ref :form/r]
+     (let [items (form-rest-list descriptor)
+           n (vector-count items)]
+       (cond
+         (= n 0) (err :tuple-needs-an-item)
+         (> n 32) (err :tuple-item-count-exceeds-bound)
+         :else
+         (let [ls (layouts-of items schemas visited)]
+           (if (err? ls)
+             ls
+             (merge-maps (assoc-kw (assoc-kw (assoc-kw (form-form-map (form-no-forms)) :descriptor descriptor)
+                                             :kind (form-keyword-form :tuple))
+                                   :item-layouts ls)
+                         (structural-product-layout ls))))))))
+
+
+
+#?(:kotoba
+   (defn- option-layout [descriptor [:ref :form/r] schemas [:ref :form/r] visited [:ref :form/r]] [:ref :form/r]
+     (if (not (= 2 (form-count-of descriptor)))
+       (err :option-descriptor-shape)
+       (let [item-layout (layout* (form-nth-of descriptor 1) schemas visited)]
+         (if (err? item-layout)
+           item-layout
+           (let [cases (form-form-vec (form-two-forms (case-entry (form-keyword-form :none) (unit-case-layout))
+                                                       (case-entry (form-keyword-form :some) item-layout)))
+                 m0 (form-form-map (form-no-forms))
+                 m1 (assoc-kw m0 :descriptor descriptor)
+                 m2 (assoc-kw m1 :kind (form-keyword-form :option))
+                 m3 (assoc-kw m2 :item-layout item-layout)
+                 m4 (assoc-kw m3 :cases cases)
+                 m5 (assoc-kw m4 :validation (doc "[:bounded-discriminant]"))]
+             (merge-maps m5 (structural-union-layout cases)))))))
+   :default
+   (defn- option-layout
+     "Checked Canonical ABI layout for a structural `[:option item-descriptor]`
+     (the Component Model's `option<T>`): sugar over the same union-of-cases
+     math `variant-layout` uses, specialized to exactly the two cases
+     `option<T>` always has -- a payload-less `none` (`unit-case-layout`) and a
+     `some` case carrying `item-descriptor`'s own recursive `layout*` result.
+     `item-layout` is kept alongside on the returned map (not discarded once
+     folded into `:flat`), exactly the reason `list-layout` keeps its own
+     `:item-layout` alongside: so a caller can derive the payload area's shape
+     or recurse into a nested record/variant/list/option/result item without
+     re-deriving it from the descriptor. `item-descriptor` may be any
+     already-admitted Canonical ABI descriptor, including another `:option`,
+     `:result`, or `:list` -- unlike `[:list [:list ...]]`, nesting an option or
+     result inside another one is not a genuinely harder shape (both sides are
+     still a single fixed-size union payload area, exactly the same recursive
+     shape a variant case whose own payload is another variant already has),
+     so no analogous rejection applies here. A `visited` guard is threaded
+     straight through into `item-descriptor`'s own `layout*` call unchanged, so
+     an item type reaching back to an *enclosing* record/variant's own identity
+     (including by way of an option) is still caught by that record/variant's
+     own existing recursion guard, exactly as `list-layout` already does."
+     [descriptor schemas visited]
+     (when-not (= 2 (count descriptor))
+       (reject "option descriptor must be exactly [:option item-descriptor]"
+               {:descriptor descriptor}))
+     (let [item-descriptor (second descriptor)
+           item-layout (layout* item-descriptor schemas visited)
+           case-layouts [{:tag :none :layout (unit-case-layout)}
+                         {:tag :some :layout item-layout}]]
+       (merge {:descriptor descriptor
+               :kind :option
+               :item-layout item-layout
+               :cases case-layouts
+               ;; Declarative obligation for a future codegen consumer, exactly
+               ;; the same "documents an obligation, nothing in this repository
+               ;; reads it programmatically" contract every other :validation
+               ;; tag in this file already has (confirmed by grep, see ADR).
+               ;; `variant-layout` itself carries no analogous tag for its own
+               ;; discriminant today -- a pre-existing gap this ADR does not
+               ;; also need to close, since it is out of this task's scope.
+               :validation [:bounded-discriminant]}
+              (structural-union-layout case-layouts)))))
+
+
+
+#?(:kotoba
+   (defn- result-layout [descriptor [:ref :form/r] schemas [:ref :form/r] visited [:ref :form/r]] [:ref :form/r]
+     (if (not (= 3 (form-count-of descriptor)))
+       (err :result-descriptor-shape)
+       (let [ok-layout (layout* (form-nth-of descriptor 1) schemas visited)
+             err-layout (layout* (form-nth-of descriptor 2) schemas visited)]
+         (cond
+           (err? ok-layout) ok-layout
+           (err? err-layout) err-layout
+           :else
+           (let [cases (form-form-vec (form-two-forms (case-entry (form-keyword-form :ok) ok-layout)
+                                                       (case-entry (form-keyword-form :err) err-layout)))
+                 m0 (form-form-map (form-no-forms))
+                 m1 (assoc-kw m0 :descriptor descriptor)
+                 m2 (assoc-kw m1 :kind (form-keyword-form :result))
+                 m3 (assoc-kw m2 :ok-layout ok-layout)
+                 m4 (assoc-kw m3 :err-layout err-layout)
+                 m5 (assoc-kw m4 :cases cases)
+                 m6 (assoc-kw m5 :validation (doc "[:bounded-discriminant]"))]
+             (merge-maps m6 (structural-union-layout cases)))))))
+   :default
+   (defn- result-layout
+     "Checked Canonical ABI layout for a structural `[:result ok-descriptor
+     err-descriptor]` (the Component Model's `result<T, E>`): sugar over the
+     same union-of-cases math `variant-layout` uses, specialized to exactly the
+     two cases `result<T, E>` always has -- `ok` carrying `ok-descriptor` and
+     `err` carrying `err-descriptor`. Both payload types are required (matching
+     `kotoba.kir.value`'s own domain-level `[:result T E]` descriptor
+     shape at `validate-value-type!`, which also always requires both types
+     present); the Component Model spec's optional-payload `result<>`/
+     `result<T>`/`result<_, E>` shapes are not admitted by this slice, matching
+     this task's own scope boundary. `ok-layout`/`err-layout` are kept
+     alongside on the returned map for the same reason `list-layout` keeps its
+     own `:item-layout` and `option-layout` keeps its own `:item-layout`: so a
+     caller can recurse into either payload's own shape without re-deriving it
+     from the descriptor. Either descriptor may be any already-admitted
+     Canonical ABI descriptor, including another `:option`/`:result`/`:list`;
+     see `option-layout`'s docstring for why no list-of-list-style rejection
+     applies to nesting a union inside a union. `visited` is threaded straight
+     through into both payload types' own `layout*` calls unchanged, exactly as
+     `option-layout`/`list-layout` already do."
+     [descriptor schemas visited]
+     (when-not (= 3 (count descriptor))
+       (reject "result descriptor must be exactly [:result ok-descriptor err-descriptor]"
+               {:descriptor descriptor}))
+     (let [ok-descriptor (second descriptor)
+           err-descriptor (nth descriptor 2)
+           ok-layout (layout* ok-descriptor schemas visited)
+           err-layout (layout* err-descriptor schemas visited)
+           case-layouts [{:tag :ok :layout ok-layout}
+                         {:tag :err :layout err-layout}]]
+       (merge {:descriptor descriptor
+               :kind :result
+               :ok-layout ok-layout
+               :err-layout err-layout
+               :cases case-layouts
+               :validation [:bounded-discriminant]}
+              (structural-union-layout case-layouts)))))
+
+
+
+#?(:kotoba
+   (defn- list-layout [descriptor [:ref :form/r] schemas [:ref :form/r] visited [:ref :form/r]] [:ref :form/r]
+     (let [item-layout (layout* (form-nth-of descriptor 1) schemas visited)]
+       (if (err? item-layout)
+         item-layout
+         (let [m0 (doc "{:size 8 :alignment 4 :flat [:i32 :i32] :max-items 16384 :max-total-items 16384 :validation [:checked-pointer-range :bounded-item-count :bounded-total-item-count]}")
+               m1 (assoc-kw m0 :descriptor descriptor)]
+           (assoc-kw m1 :item-layout item-layout)))))
+   :default
+   (defn- list-layout
+     "Checked Canonical ABI layout for a bounded `[:list item-descriptor]`: a
+     pointer+length pair in linear memory, the same two-core-value `[:i32 :i32]`
+     shape ADR 0040/0041 already gave bare `string`/`keyword` parameters and
+     results, generalized from a byte-addressed buffer (length in UTF-8 bytes)
+     to an element-addressed one (length in items). `item-layout` is the item
+     descriptor's own recursive `layout*` result, kept alongside (not flattened
+     away) so a caller can derive the buffer's per-element stride
+     (`align-up` of the item's own `:size` to its own `:alignment`) and recurse
+     into a nested record/variant item without re-deriving its shape from the
+     descriptor -- exactly how a record field's own nested `:fields`/`:cases`
+     layout is kept alongside today. Item count is bounded by
+     `value/canonical-list-item-limit`, exposed here as `:max-items` (the same
+     role `:max-bytes` plays for a bounded string/keyword) so callers can tell a
+     list leaf apart from a plain scalar leaf or a string/keyword leaf without
+     re-deriving it from the descriptor; the corresponding `:validation` tag is
+     `:bounded-item-count`, alongside the same `:checked-pointer-range` tag
+     every other indirect (pointer-bearing) leaf already carries. Nested lists
+     additionally share `value/canonical-list-total-item-limit` across the
+     complete active graph; exposing it as `:max-total-items` prevents a caller
+     from accidentally multiplying the per-node bound at each depth.
+
+     An item type that is itself a recursive nominal schema (a record/variant that
+     reaches back to an identity already in `visited`, including by way of a
+     list) is still caught by `record-layout`/`variant-layout`'s own existing
+     recursion guard: `visited` is threaded straight through unchanged, exactly
+     as a record field or variant case payload's own type already does."
+     [descriptor schemas visited]
+     (let [item-descriptor (second descriptor)
+           item-layout (layout* item-descriptor schemas visited)]
+         {:descriptor descriptor
+          :size 8
+          :alignment 4
+          :flat [:i32 :i32]
+          :item-layout item-layout
+          :max-items value/canonical-list-item-limit
+          :max-total-items value/canonical-list-total-item-limit
+          :validation [:checked-pointer-range :bounded-item-count
+                       :bounded-total-item-count]})))
+
+
+
+#?(:kotoba
+   (defn- scalar-layout [descriptor [:ref :form/r]] [:ref :form/r]
+     (cond
+       (kw= descriptor :i64) (doc "{:descriptor :i64 :size 8 :alignment 8 :flat [:i64]}")
+       (kw= descriptor :f32) (doc "{:descriptor :f32 :size 4 :alignment 4 :flat [:f32]}")
+       (kw= descriptor :f64) (doc "{:descriptor :f64 :size 8 :alignment 8 :flat [:f64]}")
+       (kw= descriptor :bool) (doc "{:descriptor :bool :size 1 :alignment 1 :flat [:i32] :validation [:canonical-bool]}")
+       (kw= descriptor :string) (doc "{:descriptor :string :size 8 :alignment 4 :flat [:i32 :i32] :encoding :utf8 :max-bytes 65536 :validation [:checked-pointer-range :valid-utf8]}")
+       (kw= descriptor :keyword) (doc "{:descriptor :keyword :size 8 :alignment 4 :flat [:i32 :i32] :encoding :utf8 :max-bytes 512 :validation [:checked-pointer-range :valid-utf8]}")
+       (kw= descriptor :symbol) (doc "{:descriptor :symbol :size 8 :alignment 4 :flat [:i32 :i32] :encoding :utf8 :max-bytes 512 :validation [:checked-pointer-range :valid-utf8 :valid-symbol-source]}")
+       :else (form-nil-form)))
+   :default
+   (defn- layout* [descriptor schemas visited]
+     (cond
+       (= descriptor :i64) {:descriptor :i64 :size 8 :alignment 8 :flat [:i64]}
+       (= descriptor :f32) {:descriptor :f32 :size 4 :alignment 4 :flat [:f32]}
+       (= descriptor :f64) {:descriptor :f64 :size 8 :alignment 8 :flat [:f64]}
+       (= descriptor :bool) {:descriptor :bool :size 1 :alignment 1 :flat [:i32]
+                             :validation [:canonical-bool]}
+       (= descriptor :string) {:descriptor :string
+                               :size 8
+                               :alignment 4
+                               :flat [:i32 :i32]
+                               :encoding string-encoding
+                               :max-bytes value/string-value-byte-limit
+                               :validation [:checked-pointer-range :valid-utf8]}
+       (= descriptor :keyword) {:descriptor :keyword
+                                :size 8
+                                :alignment 4
+                                :flat [:i32 :i32]
+                                :encoding string-encoding
+                                :max-bytes value/keyword-value-byte-limit
+                                :validation [:checked-pointer-range :valid-utf8]}
+       (= descriptor :symbol) {:descriptor :symbol
+                               :size 8
+                               :alignment 4
+                               :flat [:i32 :i32]
+                               :encoding string-encoding
+                               :max-bytes value/symbol-value-byte-limit
+                               :validation [:checked-pointer-range :valid-utf8
+                                            :valid-symbol-source]}
+       (= descriptor :vector-i64)
+       (assoc (list-layout [:list :i64] schemas visited)
+              :descriptor :vector-i64)
+       (= descriptor :vector-f64)
+       (assoc (list-layout [:list :f64] schemas visited)
+              :descriptor :vector-f64)
+       (and (vector? descriptor) (= :ref (first descriptor)))
+       (let [schema (get schemas (second descriptor))]
+         (if (and (vector? schema) (= :variant (first schema)))
+           (variant-layout descriptor schemas visited)
+           (record-layout descriptor schemas visited)))
+       (and (vector? descriptor) (= :record (first descriptor)))
+       (let [identity (second descriptor)]
+         (when-not (= descriptor (get schemas identity))
+           (reject "inline record differs from sealed schema identity"
+                   {:descriptor descriptor :schema (get schemas identity)}))
+         (assoc (record-layout [:ref identity] schemas visited) :descriptor descriptor))
+       (and (vector? descriptor) (= :variant (first descriptor)))
+       (let [identity (second descriptor)]
+         (when-not (= descriptor (get schemas identity))
+           (reject "inline variant differs from sealed schema identity"
+                   {:descriptor descriptor :schema (get schemas identity)}))
+         (assoc (variant-layout [:ref identity] schemas visited) :descriptor descriptor))
+       (and (vector? descriptor) (= :list (first descriptor)))
+       (list-layout descriptor schemas visited)
+       ;; Sets lower as Component Model lists (same pointer+length ABI). Item
+       ;; count uses typed-set-item-limit (32), not the list bound (16384) —
+       ;; matching kotoba.kir.value's set domain. Required for log-v1 fields/
+       ;; entries which are [:set record] in the capability kit.
+       (and (vector? descriptor) (= :set (first descriptor)))
+       (assoc (list-layout [:list (second descriptor)] schemas visited)
+              :descriptor descriptor
+              :max-items value/typed-set-item-limit
+              :max-total-items value/typed-set-item-limit)
+       (and (vector? descriptor) (= :option (first descriptor)))
+       (option-layout descriptor schemas visited)
+       (and (vector? descriptor) (= :result (first descriptor)))
+       (result-layout descriptor schemas visited)
+       (and (vector? descriptor) (= :tuple (first descriptor)))
+       (tuple-layout descriptor schemas visited)
+       :else
+       (reject "descriptor has no qualified Canonical ABI layout"
+               {:descriptor descriptor}))))
+
+#?(:kotoba
+   (defn- retag [layout [:ref :form/r] descriptor [:ref :form/r]] [:ref :form/r]
+     (if (err? layout) layout (assoc-kw layout :descriptor descriptor))))
+
+#?(:kotoba
+   (defn- layout* [descriptor [:ref :form/r] schemas [:ref :form/r] visited [:ref :form/r]] [:ref :form/r]
+     (let [scalar (scalar-layout descriptor)
+           head (form-first-of descriptor)
+           vec? (form-is-vec? descriptor)]
+       (cond
+         (not (form-is-nil? scalar)) scalar
+         (kw= descriptor :vector-i64) (retag (list-layout (doc "[:list :i64]") schemas visited) descriptor)
+         (kw= descriptor :vector-f64) (retag (list-layout (doc "[:list :f64]") schemas visited) descriptor)
+         (and vec? (kw= head :ref))
+         (let [schema (form-form-get schemas (form-nth-of descriptor 1))]
+           (if (and (form-is-vec? schema) (kw= (form-first-of schema) :variant))
+             (variant-layout descriptor schemas visited)
+             (record-layout descriptor schemas visited)))
+         (and vec? (kw= head :record))
+         (let [identity (form-nth-of descriptor 1)]
+           (if (not (form-eq descriptor (form-form-get schemas identity)))
+             (err :inline-record-differs-from-schema)
+             (retag (record-layout (form-vec2 (form-keyword-form :ref) identity) schemas visited) descriptor)))
+         (and vec? (kw= head :variant))
+         (let [identity (form-nth-of descriptor 1)]
+           (if (not (form-eq descriptor (form-form-get schemas identity)))
+             (err :inline-variant-differs-from-schema)
+             (retag (variant-layout (form-vec2 (form-keyword-form :ref) identity) schemas visited) descriptor)))
+         (and vec? (kw= head :list)) (list-layout descriptor schemas visited)
+         (and vec? (kw= head :set))
+         (let [l (list-layout (form-vec2 (form-keyword-form :list) (form-nth-of descriptor 1)) schemas visited)]
+           (if (err? l)
+             l
+             (assoc-kw (assoc-kw (assoc-kw l :descriptor descriptor) :max-items (form-int-form 32)) :max-total-items (form-int-form 32))))
+         (and vec? (kw= head :option)) (option-layout descriptor schemas visited)
+         (and vec? (kw= head :result)) (result-layout descriptor schemas visited)
+         (and vec? (kw= head :tuple)) (tuple-layout descriptor schemas visited)
+         :else (err :no-qualified-layout)))))
+
+
+
+#?(:kotoba
+   (defn layout
+     "Return the closed standard32 memory and flat-value layout for one admitted
+     descriptor; aborts with the problem keyword when it has none."
+     ([descriptor [:ref :form/r]] [:ref :form/r] (layout descriptor (form-form-map (form-no-forms))))
+     ([descriptor [:ref :form/r] schemas [:ref :form/r]] [:ref :form/r]
+      (let [l (layout* descriptor schemas (form-form-vec (form-no-forms)))]
+        (if (err? l)
+          (throw (ex-info "canonical ABI layout rejected"
+                          {:phase :canonical-abi-layout :problem (form-keyword-value (fget l :kotoba/error))}))
+          l))))
+   :default
+   (defn layout
+     "Return the closed standard32 memory and flat-value layout for one admitted
+     descriptor. Aggregate descriptors are added only with matching lift/lower
+     implementations."
+     ([descriptor] (layout descriptor {}))
+     ([descriptor schemas] (layout* descriptor schemas #{}))))
+
+
+
+#?(:kotoba
+   (defn- leaf-of [layout [:ref :form/r] absolute :i64] [:ref :form/r]
+     (let [d (fget layout :descriptor)
+           base (assoc-kw (assoc-kw (form-form-map (form-no-forms)) :offset (form-int-form absolute)) :descriptor d)]
+       (cond
+         (form-form-has? layout (form-keyword-form :max-bytes))
+         (assoc-kw base :max-bytes (fget layout :max-bytes))
+         (form-form-has? layout (form-keyword-form :max-items))
+         (assoc-kw (assoc-kw (assoc-kw base :max-items (fget layout :max-items))
+                             :max-total-items (fget layout :max-total-items))
+                   :item-layout (fget layout :item-layout))
+         :else base)))
+   :default
+   (defn layout-leaves
+     "Flatten one record layout (as returned by `layout`) into an ordered list
+     of leaves, in the same left-to-right depth-first order as the layout's own
+     `:flat` vector. A field whose own layout is itself a nested record layout
+     (that is, it carries a `:fields` key) is recursed into so every nested leaf
+     gets its own absolute store/load offset; this is how one level of nested
+     aggregate lowering reuses the same flat-scalar codegen as a plain record.
+     A field whose own layout is a bounded `tuple` (also carries a `:fields` key,
+     `structural-product-layout`'s own positional `{:offset :layout}` entries)
+     is recursed into by this same clause with no dedicated branch of its own:
+     a tuple is a pure fixed-offset product exactly like a nested record, so
+     every element's own absolute offset is already the final answer for
+     flattening, unlike a list/option/result whose payload interpretation is
+     either runtime-length (list) or discriminant-gated (option/result).
+     A field whose own layout is a bounded `string`/`keyword` (carries a
+     `:max-bytes` key, the same pointer+length linear-memory shape ADR 0040/0041
+     already gave bare string parameters/results) is exposed as
+     `{:offset :descriptor :max-bytes}` instead of the plain scalar leaf's
+     `{:offset :descriptor}`, so callers can tell a two-core-value pointer+length
+     leaf from a one-core-value scalar leaf without re-deriving it from the
+     descriptor. A field whose own layout is a bounded `list` (carries a
+     `:max-items` key, the pointer+length shape `list-layout` above gives a
+     bounded `[:list ...]`) is likewise exposed as its own leaf shape,
+     `{:offset :descriptor :max-items :item-layout}`, rather than being
+     recursed into the way a nested record's `:fields` are: a list's own items
+     live in a separately-addressed buffer at a length only known at runtime,
+     not at a further fixed offset inside this record's own layout, so there is
+     nothing further to flatten here -- `:item-layout` is carried on the leaf
+     itself so a caller can still derive the item stride/shape without
+     re-deriving it from the descriptor. Every consumer must still bound
+     nesting depth before calling this (`layout` itself only rejects unbounded
+     recursive schemas, not depth generally)."
+     ([record-layout] (layout-leaves record-layout 0))
+     ([record-layout base-offset]
+      (vec
+       (mapcat (fn [{:keys [offset layout]}]
+                 (let [absolute (+ base-offset offset)]
+                   (cond
+                     (contains? layout :fields)
+                     (layout-leaves layout absolute)
+
+                     (contains? layout :max-bytes)
+                     [{:offset absolute :descriptor (:descriptor layout)
+                       :max-bytes (:max-bytes layout)}]
+
+                     (contains? layout :max-items)
+                     [{:offset absolute :descriptor (:descriptor layout)
+                       :max-items (:max-items layout)
+                       :max-total-items (:max-total-items layout)
+                       :item-layout (:item-layout layout)}]
+
+                     :else
+                     [{:offset absolute :descriptor (:descriptor layout)}])))
+               (:fields record-layout))))))
+
+#?(:kotoba
+   (defn- leaves-from [record-layout [:ref :form/r] base-offset :i64] [:ref :form/r]
+     (let [fields (fget record-layout :fields)
+           n (form-count-of fields)]
+       (loop [i 0 out (form-no-forms)]
+         (if (>= i n)
+           (form-form-vec out)
+           (let [f (form-nth-of fields i)
+                 layout (fget f :layout)
+                 absolute (+ base-offset (int-of (fget f :offset)))]
+             (recur (inc i)
+                    (if (form-form-has? layout (form-keyword-form :fields))
+                      (form-append-many out (form-kids-of (leaves-from layout absolute)))
+                      (form-append-form out (leaf-of layout absolute))))))))))
+
+#?(:kotoba
+   (defn layout-leaves
+     "Flatten one record layout into an ordered list of leaves."
+     ([record-layout [:ref :form/r]] [:ref :form/r] (leaves-from record-layout 0))
+     ([record-layout [:ref :form/r] base-offset :i64] [:ref :form/r] (leaves-from record-layout base-offset))))
+
+
+
+#?(:kotoba
+   (defn- param-layouts [param-types [:ref :form/r] schemas [:ref :form/r]] [:ref :form/r]
+     (layouts-of (form-kids-of param-types) schemas (form-form-vec (form-no-forms))))
+   :default
+   (defn export-plan
+     "Plan the standard32 core signature and result-area contract for one KIR
+     export. Multi-flat results use the Canonical ABI indirect-result convention."
+     ([function] (export-plan function {}))
+     ([{:keys [name params param-types result]} schemas]
+     (when-not (= (count params) (count param-types))
+       (reject "parameter names and types differ in arity"
+               {:function name :params (count params) :types (count param-types)}))
+     (let [parameter-layouts (mapv #(layout % schemas) param-types)
+           result-layout (layout result schemas)
+           result-flat (:flat result-layout)
+           indirect-result? (> (count result-flat) 1)]
+       {:profile profile
+        :function name
+        :parameters (mapv (fn [parameter abi-layout]
+                            {:name parameter :layout abi-layout})
+                          params parameter-layouts)
+        :core-params (vec (mapcat :flat parameter-layouts))
+        :result-layout result-layout
+        :indirect-result? indirect-result?
+        :core-results (if indirect-result? [:i32] result-flat)
+        :post-return-params (if indirect-result? [:i32] result-flat)}))))
+
+#?(:kotoba
+   (defn- core-params-of [layouts [:ref :form/r]] [:ref :form/r]
+     (let [n (form-count-of layouts)]
+       (loop [i 0 out (form-no-forms)]
+         (if (>= i n)
+           (form-form-vec out)
+           (recur (inc i) (form-append-many out (form-kids-of (fget (form-nth-of layouts i) :flat)))))))))
+
+#?(:kotoba
+   (defn- parameters-of [params [:ref :form/r] layouts [:ref :form/r]] [:ref :form/r]
+     (let [n (form-count-of params)]
+       (loop [i 0 out (form-no-forms)]
+         (if (>= i n)
+           (form-form-vec out)
+           (recur (inc i)
+                  (form-append-form out (assoc-kw (assoc-kw (form-form-map (form-no-forms)) :name (form-nth-of params i))
+                                                  :layout (form-nth-of layouts i)))))))))
+
+#?(:kotoba
+   (defn- plan-of [function [:ref :form/r] schemas [:ref :form/r]] [:ref :form/r]
+     (let [params (fget function :params)
+           param-types (fget function :param-types)
+           layouts (param-layouts param-types schemas)
+           result-layout (layout* (fget function :result) schemas (form-form-vec (form-no-forms)))]
+       (cond
+         (not (= (form-count-of params) (form-count-of param-types))) (err :parameter-arity-mismatch)
+         (err? layouts) layouts
+         (err? result-layout) result-layout
+         :else
+         (let [result-flat (fget result-layout :flat)
+               indirect (> (form-count-of result-flat) 1)
+               core-results (if indirect (doc "[:i32]") result-flat)
+               m0 (form-form-map (form-no-forms))
+               m1 (assoc-kw m0 :profile (form-keyword-form :component-model/standard32-v1))
+               m2 (assoc-kw m1 :function (fget function :name))
+               m3 (assoc-kw m2 :parameters (parameters-of params layouts))
+               m4 (assoc-kw m3 :core-params (core-params-of layouts))
+               m5 (assoc-kw m4 :result-layout result-layout)
+               m6 (assoc-kw m5 :indirect-result? (form-bool-form indirect))
+               m7 (assoc-kw m6 :core-results core-results)]
+           (assoc-kw m7 :post-return-params core-results))))))
+
+#?(:kotoba
+   (defn export-plan
+     "Plan the standard32 core signature and result-area contract for one KIR
+     export; aborts with the problem keyword."
+     ([function [:ref :form/r]] [:ref :form/r] (export-plan function (form-form-map (form-no-forms))))
+     ([function [:ref :form/r] schemas [:ref :form/r]] [:ref :form/r]
+      (let [p (plan-of function schemas)]
+        (if (err? p)
+          (throw (ex-info "canonical ABI export plan rejected"
+                          {:phase :canonical-abi-layout :problem (form-keyword-value (fget p :kotoba/error))}))
+          p)))))
