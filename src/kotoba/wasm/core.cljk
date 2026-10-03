@@ -2503,6 +2503,29 @@
                         (concat [0x42 0] (emit* (first args) env) [0x7d])
                         (concat (emit* (first args) env)
                                 (mapcat #(concat (emit* % env) [opcode]) (rest args)))))
+                    ;; i64 min/max, typed as :i64 by kotoba.wasm.typed. Same
+                    ;; i64.lt_s (0x53) / i64.gt_s (0x55) + select (0x1b) as the
+                    ;; untyped emitter, but each operand is evaluated once into
+                    ;; an i64 local (an operand may allocate or call), folded
+                    ;; left so (max a b c) is (max (max a b) c). Until
+                    ;; 2026-10-03 this arm did not exist and a typed module
+                    ;; using either was refused `typed Wasm operation is not
+                    ;; qualified` (amu ladder :typed-wasm-min-max).
+                    (contains? '#{min max} op)
+                    (let [cmp (if (= op 'min) 0x53 0x55)
+                          acc-local (allocate! 0x7e)
+                          next-local (allocate! 0x7e)]
+                      (concat (emit* (first args) env) [::local-set acc-local]
+                              (mapcat (fn [arg]
+                                        (concat (emit* arg env) [::local-set next-local
+                                                                 ::local-get acc-local
+                                                                 ::local-get next-local
+                                                                 ::local-get acc-local
+                                                                 ::local-get next-local
+                                                                 cmp 0x1b
+                                                                 ::local-set acc-local]))
+                                      (rest args))
+                              [::local-get acc-local]))
                     (contains? '#{pair pair-first pair-second} op)
                     (concat (mapcat #(emit* % env) args)
                             [::call (get intrinsic-indices op)])
