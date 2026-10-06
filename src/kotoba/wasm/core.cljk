@@ -162,7 +162,7 @@
 (def ^:private constructor-ops
   '#{pair kgraph-assert! map-new map-assoc option-some result-ok result-err
      result-ok-of result-err-of variant-new option-some-of option-none-of
-     hetero-vector-new hetero-vector-assoc typed-list-new typed-set-new
+     hetero-vector-new hetero-vector-assoc typed-list-new typed-list-conj typed-set-new
      typed-set-conj typed-set-disj typed-map-new typed-map-assoc typed-map-dissoc
      record-new record-assoc vector-new vector-conj vector-assoc vector-assoc!
      vector-alloc vector-drop vector-take vector-f64-new vector-f64-conj
@@ -3150,6 +3150,22 @@
                       (concat (i32-const (descriptor-id type)) (emit* value env)
                               (emit* index env)
                               [::call (get intrinsic-indices intrinsic)]))
+                    ;; The list builder (amu ADR 0353 floor :empty-vector-field):
+                    ;; the accessor's shape with the item in the index's place,
+                    ;; answering the new list.
+                    (= op 'typed-list-conj)
+                    (let [[type value item] args
+                          item-type (second type)
+                          intrinsic (cond (= item-type :i64) 'typed-list-conj-i64
+                                          (reference-type? item-type) 'typed-list-conj-ref
+                                          :else nil)]
+                      (when-not intrinsic
+                        (throw (ex-info "typed list conj has no intrinsic for this item type"
+                                        {:phase :wasm-typed-lowering
+                                         :operation op :item-type item-type :form form})))
+                      (concat (i32-const (descriptor-id type)) (emit* value env)
+                              (emit* item env)
+                              [::call (get intrinsic-indices intrinsic)]))
                     (= op 'typed-map-count)
                     (let [[type value] args]
                       (concat (i32-const (descriptor-id type)) (emit* value env)
@@ -3770,6 +3786,7 @@
         ;; that never index a list. A module that DOES index one needs a host
         ;; that answers `list-nth-*`, and says so by importing it.
         has-typed-list-nth? (uses-operation? functions '#{typed-list-nth})
+        has-typed-list-conj? (uses-operation? functions '#{typed-list-conj})
         has-disjoint-set? (uses-operation? functions
                                             '#{disjoint-set-i64-new disjoint-set-i64-count
                                                disjoint-set-i64-union})
@@ -3915,6 +3932,11 @@
                          (when has-typed-list-nth?
                            [['typed-list-nth-i64 "kotoba:typed" "list-nth-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x7e]]
                             ['typed-list-nth-ref "kotoba:typed" "list-nth-ref" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]])
+                         ;; Conditional for the same reason: only a module that
+                         ;; builds a list asks its host for `list-conj-*`.
+                         (when has-typed-list-conj?
+                           [['typed-list-conj-i64 "kotoba:typed" "list-conj-i64" [0x60 3 0x7f 0x6f 0x7e 1 0x6f]]
+                            ['typed-list-conj-ref "kotoba:typed" "list-conj-ref" [0x60 3 0x7f 0x6f 0x6f 1 0x6f]]])
                          (when has-string-index?
                            [['typed-string-index-new "kotoba:typed" "string-index-new" [0x60 1 0x7f 1 0x6f]]
                             ['typed-string-index-contains "kotoba:typed" "string-index-contains" [0x60 3 0x7f 0x6f 0x6f 1 0x7f]]

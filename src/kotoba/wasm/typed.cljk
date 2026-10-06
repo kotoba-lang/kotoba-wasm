@@ -479,7 +479,7 @@
         (= op 'record-get)
         (let [[type _ field] args]
           (second (some #(when (= field (first %)) %) (nth type 2))))
-        (contains? '#{hetero-vector-assoc typed-set-conj typed-set-disj
+        (contains? '#{hetero-vector-assoc typed-set-conj typed-set-disj typed-list-conj
                       typed-map-assoc typed-map-dissoc record-assoc} op)
         (first args)
         :else (or (:result (get signatures op))
