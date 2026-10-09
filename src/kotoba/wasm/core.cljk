@@ -2898,6 +2898,22 @@
                                          'document-bool-value 'typed-document-bool-value
                                          'document-i64-value 'typed-document-i64-value
                                          'document-f64-value 'typed-document-f64-value} op))])
+                    ;; :bytes and :link documents (root ADR-2610092310 S3).
+                    ;; Each passes the document descriptor and the bytes
+                    ;; descriptor, so the host checks the operand and the
+                    ;; payload against sealed descriptors, as for
+                    ;; bytes-from-vector-i64. document-link and both readers
+                    ;; answer an option the host builds (none: not one binary
+                    ;; CIDv1 / the other kind).
+                    (contains? '#{document-bytes document-link
+                                  document-bytes-value document-link-value} op)
+                    (concat (i32-const (descriptor-id :document)) (i32-const (descriptor-id :bytes))
+                            (emit* (first args) env)
+                            [::call (get intrinsic-indices
+                                         ({'document-bytes 'typed-document-bytes
+                                           'document-link 'typed-document-link
+                                           'document-bytes-value 'typed-document-bytes-value
+                                           'document-link-value 'typed-document-link-value} op))])
                     (= op 'vector-f64-at)
                     (concat (i32-const (descriptor-id :vector-f64))
                             (emit* (first args) env) (emit* (second args) env)
@@ -3799,7 +3815,13 @@
                                           document-edn-print document-edn-read document-contains document-get document-assoc
                                           document-dissoc document-merge document-string-value
                                           document-keyword-value document-symbol-value document-bool-value
-                                          document-i64-value document-f64-value})
+                                          document-i64-value document-f64-value
+                                          document-bytes document-bytes-value document-link document-link-value})
+        ;; Imported only by a module that uses them, so a host that predates
+        ;; the :bytes / :link document kinds still runs every other module.
+        has-document-payload? (uses-operation? functions
+                                               '#{document-bytes document-bytes-value
+                                                  document-link document-link-value})
         has-keyword-from-string? (uses-operation? functions '#{keyword-from-string})
         has-symbol-from-string? (uses-operation? functions '#{symbol})
         has-bytes-empty? (uses-operation? functions '#{bytes-empty})
@@ -3979,6 +4001,11 @@
                             ['typed-document-bool-value "kotoba:typed" "document-bool-value" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-i64-value "kotoba:typed" "document-i64-value" [0x60 2 0x7f 0x6f 1 0x6f]]
                             ['typed-document-f64-value "kotoba:typed" "document-f64-value" [0x60 2 0x7f 0x6f 1 0x6f]]])
+                         (when has-document-payload?
+                           [['typed-document-bytes "kotoba:typed" "document-bytes" [0x60 3 0x7f 0x7f 0x6f 1 0x6f]]
+                            ['typed-document-bytes-value "kotoba:typed" "document-bytes-value" [0x60 3 0x7f 0x7f 0x6f 1 0x6f]]
+                            ['typed-document-link "kotoba:typed" "document-link" [0x60 3 0x7f 0x7f 0x6f 1 0x6f]]
+                            ['typed-document-link-value "kotoba:typed" "document-link-value" [0x60 3 0x7f 0x7f 0x6f 1 0x6f]]])
                          (when has-keyword-from-string?
                            [['typed-keyword-from-string "kotoba:typed" "keyword-from-string"
                              [0x60 2 0x7f 0x6f 1 0x6f]]])

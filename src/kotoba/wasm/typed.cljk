@@ -447,6 +447,10 @@
         (= op 'document-bool-value) [:option :bool]
         (= op 'document-i64-value) [:option :i64]
         (= op 'document-f64-value) [:option :f64]
+        ;; :bytes and :link documents (root ADR-2610092310 S3)
+        (= op 'document-bytes) :document
+        (= op 'document-link) [:option :document]
+        (contains? '#{document-bytes-value document-link-value} op) [:option :bytes]
         (contains? '#{vector-f64-get vector-f64-at} op) :f64
         (contains? '#{vector-f64-drop vector-f64-assoc vector-f64-conj} op) :vector-f64
         (contains? '#{vector-drop vector-assoc vector-assoc! vector-conj vector-alloc} op) :vector-i64
