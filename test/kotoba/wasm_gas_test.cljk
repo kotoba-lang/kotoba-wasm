@@ -82,7 +82,24 @@
   (is (= :gas-schedule (refusal-of #(emit call 10 (assoc v0 :default 0)))))
   (is (= :gas-schedule (refusal-of #(emit call 10 (assoc v0 :weights {'* -1}))))))
 
-(deftest a-typed-module-is-refused-rather-than-emitted-unmetered
-  (is (= :gas-typed-module-unimplemented
-         (refusal-of #(emit (assoc call :format :kotoba.kir/v4) 10 v0)))))
+;; The check half of every debit: i64.const 0; i64.lt_s; if; unreachable;
+;; end. Fuel's check is `eqz`, so this sequence counts gas debits only.
+(def gas-check [0x42 0x00 0x53 0x04 0x40 0x00 0x0b])
 
+(defn- subvector-count [haystack needle]
+  (count (filter #(= needle (vec %)) (partition (count needle) 1 haystack))))
+
+(deftest a-typed-module-is-metered-by-the-same-rule
+  ;; Since 2026-10-10 the typed (KIR v4) emitter puts the same per-form debit
+  ;; in front of every application form. Its RUN-TIME counts are compared
+  ;; with osaho and native by amu's fuel differential (--gas); recursive-list
+  ;; is 19011 on all four backends. Here: one debit per written form.
+  (let [typed-call (assoc call :format :kotoba.kir/v4
+                          :functions [{:name 'sq :params '[x] :param-types [:i64] :result :i64
+                                       :effects #{} :body '(* x x)}
+                                      {:name 'main :params [] :param-types [] :result :i64
+                                       :effects #{} :body (list 'sq (lit 3))}])]
+    (is (= 2 (subvector-count (vec (emit typed-call 10 v0)) gas-check))
+        "(sq 3) and (* x x)")
+    (is (zero? (subvector-count (vec (wasm/emit typed-call :wasm32-kotoba-v1 {:fuel 100000})) gas-check))
+        "no debit without a schedule")))
