@@ -16,6 +16,7 @@
   (:require [cljs.test :as t]
             [kotoba.wasm-bounded-map-test]
             [kotoba.wasm-capability-key-test]
+            [kotoba.wasm-gas-test]
             [kotoba.wasm-tools-portable-test]
             [kotoba.wasm-typed-cap-scalar-test]))
 
@@ -27,5 +28,6 @@
 
 (t/run-tests 'kotoba.wasm-bounded-map-test
              'kotoba.wasm-capability-key-test
+             'kotoba.wasm-gas-test
              'kotoba.wasm-tools-portable-test
              'kotoba.wasm-typed-cap-scalar-test)

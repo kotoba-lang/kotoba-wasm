@@ -187,10 +187,32 @@
 
 (declare emit-expr-unmetered)
 
+(defn- gas-charge
+  "Consensus gas (superproject adr-2610092340 D12): the bytes that debit one
+  evaluated application form's weight from the gas global and trap
+  (`unreachable`) when the balance goes negative -- the reference's rule
+  (osaho `kotoba.kir/execute-metered`: one debit per evaluated application
+  form, charged before its operands). The weight lookup is
+  `kotoba.kir.gas/form-weight`'s, restated over the same schedule data so
+  this emitter does not pin a newer osaho for three lines; the fuel
+  differential (kotoba-lang/amu scripts/test-fuel-differential.cljk) is what
+  compares the two."
+  [{:keys [global schedule]} form function-indices]
+  (let [op (first form)
+        weight (if (contains? function-indices op)
+                 (:call schedule)
+                 (get (:weights schedule) op (:default schedule)))]
+    (concat [0x23] (uleb global) [0x42] (sleb weight) [0x7d 0x24] (uleb global) ; gas -= w
+            [0x23] (uleb global) [0x42 0 0x53 0x04 0x40 0x00 0x0b])))            ; if gas < 0: unreachable
+
 (defn emit-expr
-  "`emit-expr-unmetered`, with a constructor's fuel debit in front."
+  "`emit-expr-unmetered`, with a constructor's fuel debit in front, and the
+  form's consensus gas debit in front of that when the module meters gas."
   [form env ctx]
-  (charged form (emit-expr-unmetered form env ctx)))
+  (let [code (charged form (emit-expr-unmetered form env ctx))]
+    (if (and (:gas ctx) (seq? form))
+      (concat (gas-charge (:gas ctx) form (:function-indices ctx)) code)
+      code)))
 
 (defn- emit-expr-unmetered
   [form env {:keys [function-indices intrinsic-indices next-local
@@ -3280,7 +3302,7 @@
 (defn- function-type [{:keys [params]}]
   (concat [0x60] (uleb (count params)) (repeat (count params) 0x7e) [1 0x7e]))
 
-(defn- function-body [function function-indices intrinsic-indices]
+(defn- function-body [function function-indices intrinsic-indices gas]
   (let [param-env (zipmap (:params function) (range))
         locals (local-count (:body function))
         declarations (if (zero? locals) [0] (concat [1] (uleb locals) [0x7e]))
@@ -3296,7 +3318,8 @@
         body-code (emit-expr (:body function) param-env
                              (cond-> {:function-indices function-indices
                                       :intrinsic-indices intrinsic-indices
-                                      :next-local (count (:params function))}
+                                      :next-local (count (:params function))
+                                      :gas gas}
                                loop-helper?
                                (assoc :tail-loop-name (:name function)
                                       :tail-loop-depth 0)))
@@ -3549,6 +3572,28 @@
   #?(:clj (> value max-fuel)
      :cljs (> (i64/->bigint value) max-fuel)))
 
+(defn- gas-budget!
+  "Consensus gas is opt-in and needs its schedule: either alone is refused,
+  never defaulted (a defaulted schedule is another chain's receipt). It is
+  emitted on the i64 path only so far; a typed (KIR v4) or component module
+  that asks for it is refused rather than emitted unmetered."
+  [gas schedule typed? component?]
+  (when (or gas schedule)
+    (let [refuse (fn [reason]
+                   (throw (ex-info (str "gas refused: " (name reason))
+                                   {:phase :wasm-emit :reason reason :gas gas})))
+          pos-int? (fn [x] (and (integer? x) (pos? x)))]
+      (when-not (and (exact-integer? gas) (positive-fuel? gas) (not (fuel-over-ceiling? gas)))
+        (refuse :gas-outside-admitted-range))
+      (when-not (and (map? schedule) (keyword? (:gas-schedule/id schedule))
+                     (pos-int? (:default schedule)) (pos-int? (:call schedule))
+                     (map? (:weights schedule))
+                     (every? (fn [[k v]] (and (symbol? k) (integer? v) (not (neg? v))))
+                             (:weights schedule)))
+        (refuse :gas-schedule))
+      (when typed? (refuse :gas-typed-module-unimplemented))
+      (when component? (refuse :gas-component-unimplemented)))))
+
 (defn- fuel-budget! [fuel]
   (cond
     (nil? fuel) default-fuel
@@ -3703,7 +3748,8 @@
 (defn emit
   ([kir target] (emit kir target {}))
   ([kir target {:keys [component-standard32? fuel memory-pages capability-imports
-                       core-param-types component-canonical-scalars?]
+                       core-param-types component-canonical-scalars?
+                       gas gas-schedule]
                 :as opts}]
   (let [;; The bounded `:map` value type becomes the canonical typed map
         ;; before anything here sees the module -- signatures, descriptor
@@ -3714,6 +3760,7 @@
               (= :kotoba.kir/v4 (:format kir))
               (seal-typed-cap-scalar-boxes capability-imports))
         fuel-initial (fuel-budget! fuel)
+        _ (gas-budget! gas gas-schedule (= :kotoba.kir/v4 (:format kir)) component-standard32?)
         memory-maximum (component-memory-budget! memory-pages)
         functions (:functions kir)
         typed? (= :kotoba.kir/v4 (:format kir))
@@ -4106,9 +4153,14 @@
         ;; per call, trap at zero, no guest replenishment) is unchanged.
         scratch-global-index (when has-bulk-vector?
                                (+ 1 (if component-standard32? 1 0)))
+        ;; Consensus gas, when metered, is the LAST global, so every index
+        ;; above is unchanged by it.
+        gas-global-index (when gas
+                           (+ 1 (if component-standard32? 1 0) (if has-bulk-vector? 1 0)))
         global-sec (vec (concat
                          [(+ 1 (if component-standard32? 1 0)
-                               (if has-bulk-vector? 1 0))]
+                               (if has-bulk-vector? 1 0)
+                               (if gas 1 0))]
                          [0x7e 1 0x42] (sleb fuel-initial) [0x0b]
                          ;; global 1: the bump pointer. Fuel stays global 0 so
                          ;; every function prologue's `global.get 0` is
@@ -4119,7 +4171,9 @@
                          ;; Private LIFO bump pointer for imported typed scratch.
                          ;; It is not exported and starts at zero for each module.
                          (when has-bulk-vector?
-                           [0x7f 1 0x41 0 0x0b])))
+                           [0x7f 1 0x41 0 0x0b])
+                         (when gas
+                           (concat [0x7e 1 0x42] (sleb gas) [0x0b]))))
         ;; Pure functions are exported with their source names. This makes
         ;; runtime parameters observable and testable without host authority.
         ;; When a :bool ABI wrapper exists, the exported name points at the
@@ -4165,7 +4219,8 @@
                                                               scratch-global-index)
                                                        descriptor-indices literal-indices signatures
                                                        opts)
-                             (function-body % indices intrinsic-indices))
+                             (function-body % indices intrinsic-indices
+                                            (when gas {:global gas-global-index :schedule gas-schedule})))
                           functions)
                   (mapcat (fn [function]
                             (emit-bool-export-wrapper
