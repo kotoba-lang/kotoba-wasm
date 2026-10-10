@@ -23,8 +23,8 @@
    PATH -- invoking a bare `\"wasmtime\"` PATH lookup is what left this test
    erroring in CI. Fall back to a PATH lookup for local machines that have
    Wasmtime installed directly."
-  (let [pinned (io/file ".tools" "wasmtime" "wasmtime")]
-    (if (.canExecute pinned) (.getPath pinned) "wasmtime")))
+  (let [pinned (kio/file ".tools/wasmtime/wasmtime")]
+    (if (kio/can-execute? pinned) (str pinned) "wasmtime")))
 
 (def ^:private scalar-kir
   {:format :kotoba.kir/v4 :exports ['add] :schemas {}
