@@ -2022,9 +2022,15 @@
                   ::local-get end-local 0x3f 0x00
                   0x41 16 0x74 0x4b 0x04 0x40 0x00 0x0b
                   ::local-get length-local 0xad])))
+            ;; A `:bool` replacement is boxed exactly as `emit-builder` boxes
+            ;; a `:bool` item: the slot holds a host boolean, and the i64 word
+            ;; handed to `assoc-ref` unboxed made the module fail to validate.
             (emit-assoc [type value index replacement replacement-type env]
               (concat (i32-const (descriptor-id type)) (emit* value env)
-                      (i32-const index) (emit* replacement env)
+                      (i32-const index)
+                      (if (= :bool replacement-type)
+                        (box-bool (emit* replacement env))
+                        (emit* replacement env))
                       [::call (get intrinsic-indices
                                  (symbol (str "typed-assoc-"
                                               (scalar-suffix replacement-type))))]))
@@ -3563,6 +3569,36 @@
           (fn [functions]
             (mapv #(update % :body host-runtime-form) functions))))
 
+(def ^:private compact-graph-operations
+  '#{string-index-new string-index-count string-index-contains string-index-get
+     string-index-assoc disjoint-set-i64-new disjoint-set-i64-count
+     disjoint-set-i64-union})
+
+(defn- promote-compact-graph-kir
+  "Emit a v3 module that uses a compact graph value as the v4 module it is.
+
+  The string index and the disjoint set are host values: only the typed (v4)
+  emitter imports their `kotoba:typed` intrinsics. The frontend labels a module
+  v4 when it sees a typed signature, a typed local or a typed operation, and
+  its operation scan does not name these two families -- so
+  `(disjoint-set-i64-count (disjoint-set-i64-new 4))` with no typed local
+  reached here as v3 and was emitted as `call nil` (\"invalid Wasm index
+  operand\"), while the let-bound form, typed by its local, compiled. A v3
+  module carries only i64 parameters, which is exactly its v4 `:param-types`.
+  Every other v3 module is returned unchanged."
+  [kir]
+  (if (and (= :kotoba.kir/v3 (:format kir))
+           (uses-operation? (:functions kir) compact-graph-operations))
+    (-> kir
+        (assoc :format :kotoba.kir/v4)
+        (update :functions
+                (fn [functions]
+                  (mapv #(cond-> %
+                           (not (contains? % :param-types))
+                           (assoc :param-types (vec (repeat (count (:params %)) :i64))))
+                        functions))))
+    kir))
+
 (def default-fuel
   "Historical fixed call budget. Every caller that supplies no `:fuel` gets
   exactly this, so core-wasm behaviour is unchanged by fuel parameterization."
@@ -3776,7 +3812,7 @@
         ;; before anything here sees the module -- signatures, descriptor
         ;; table, literal table, inference and emission all read one map
         ;; vocabulary. See `kotoba.wasm.typed/lower-bounded-maps`.
-        kir (typed/lower-bounded-maps kir)
+        kir (promote-compact-graph-kir (typed/lower-bounded-maps kir))
         kir (cond-> kir
               (= :kotoba.kir/v4 (:format kir))
               (seal-typed-cap-scalar-boxes capability-imports))
