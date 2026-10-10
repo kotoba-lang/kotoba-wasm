@@ -471,6 +471,14 @@
         (contains? '#{result-value-of result-error-of} op)
         (if (= op 'result-value-of) (second (first args)) (nth (first args) 2))
         (= op 'option-value-of) (second (first args))
+        ;; The i64-only safe values. Their constructors and extractors are
+        ;; lowered by the emitter, but `=` and `let` ask this function for an
+        ;; operand's type first, so without these the emitter never reached
+        ;; them: `(= (option-value o 0) 4)` was "unsupported typed Wasm
+        ;; expression" with or without a let-bound `o`.
+        (contains? '#{option-some option-none} op) :option-i64
+        (contains? '#{result-ok result-err} op) :result-i64
+        (contains? '#{option-value result-value result-error} op) :i64
         (= op 'typed-map-get) [:option (nth (first args) 2)]
         (= op 'typed-map-entry-at)
         [:option [:vector [(second (first args)) (nth (first args) 2)]]]
