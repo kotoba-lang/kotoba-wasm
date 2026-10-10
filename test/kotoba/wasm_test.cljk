@@ -9,6 +9,14 @@
 
 ;; Load gate: the split must not break namespace resolution. Each extracted
 ;; namespace must load standalone from this repo's own dependency closure.
+;; An emitted module is a byte array on the JVM and a Uint8Array on nbb;
+;; `bytes?` and `count` answer only the first (root ADR-2610100200 group B).
+(defn- module-bytes? [x]
+  #?(:clj (bytes? x) :cljs (instance? js/Uint8Array x)))
+
+(defn- byte-count [x]
+  #?(:clj (alength ^bytes x) :cljs (.-length x)))
+
 (deftest every-extracted-namespace-loads
   (is (some? (find-ns 'kotoba.wasm.core)) "kotoba.wasm.core must load")
   (is (some? (find-ns 'kotoba.wasm.typed)) "kotoba.wasm.typed must load")
@@ -21,12 +29,13 @@
              :exports ['main]
              :effects #{}
              :functions [{:name 'main :params [] :body 42}]}]
-    (is (= 4611686018427387903 wasm/max-fuel))
-    (is (bytes? (wasm/emit kir :wasm32-kotoba-v1 {:fuel wasm/max-fuel})))
+    ;; compared as text: on nbb max-fuel is a BigInt and the literal a double
+    (is (= "4611686018427387903" (str wasm/max-fuel)))
+    (is (module-bytes? (wasm/emit kir :wasm32-kotoba-v1 {:fuel wasm/max-fuel})))
     (is (thrown-with-msg?
          kerror/ExceptionInfo
          #"exceeds the representable ceiling"
-         (wasm/emit kir :wasm32-kotoba-v1 {:fuel (inc wasm/max-fuel)})))))
+         (wasm/emit kir :wasm32-kotoba-v1 {:fuel #?(:clj (inc wasm/max-fuel) :cljs (+ wasm/max-fuel (js/BigInt 1)))})))))
 (deftest frontend-loop-helpers-use-structured-wasm-without-growing-host-stack
   (let [kir {:format :kotoba.kir/v3
              :exports ['scalar 'countdown]
@@ -283,18 +292,26 @@
                :body '(if (= remaining 0)
                         total
                         (__kotoba_loop_10 (- remaining 1)))}]}
-        path (kio/temp-file "kotoba-wasm-loop-arity-" ".wasm")]
-    (try
-      (kio/write-bytes path ^bytes (wasm/emit kir :wasm32-kotoba-v1))
-      (let [printed (shell/sh "wasm-tools" "print" (str path))
-            validated (shell/sh "wasm-tools" "validate" (str path))]
-        (is (zero? (:exit printed)) (:err printed))
-        (is (not (str/includes? (:out printed) "      loop"))
-            "wrong-arity self-call must not retain stale parameter locals")
-        (is (not (zero? (:exit validated)))
-            "historical call lowering leaves malformed KIR fail-closed at validation"))
-      (finally
-        (kio/delete-if-exists path)))))
+        ;; Fail-closed either way: on nbb the emitter validates its own output
+        ;; and refuses the module; on the JVM it hands the module back and the
+        ;; official validator refuses it.
+        emitted (try (wasm/emit kir :wasm32-kotoba-v1)
+                     (catch #?(:clj Exception :cljs :default) e e))]
+    (if-not (module-bytes? emitted)
+      (is (str/includes? (ex-message emitted) "does not validate")
+          "historical call lowering leaves malformed KIR fail-closed at validation")
+      (let [path (kio/temp-file "kotoba-wasm-loop-arity-" ".wasm")]
+        (try
+          (kio/write-bytes path ^bytes emitted)
+          (let [printed (shell/sh "wasm-tools" "print" (str path))
+                validated (shell/sh "wasm-tools" "validate" (str path))]
+            (is (zero? (:exit printed)) (:err printed))
+            (is (not (str/includes? (:out printed) "      loop"))
+                "wrong-arity self-call must not retain stale parameter locals")
+            (is (not (zero? (:exit validated)))
+                "historical call lowering leaves malformed KIR fail-closed at validation"))
+          (finally
+            (kio/delete-if-exists path)))))))
 
 (deftest unsupported-helper-self-call-shapes-fall-back-to-valid-call-lowering
   (let [kir {:format :kotoba.kir/v3
@@ -335,8 +352,8 @@
                         :ready (document-bool true)
                         (document-vector (document-i64 1)) (document-string "value"))}]}
         bytes (wasm/emit kir :wasm32-browser-kotoba-v1)]
-    (is (bytes? bytes))
-    (is (pos? (count bytes)))))
+    (is (module-bytes? bytes))
+    (is (pos? (byte-count bytes)))))
 
 (deftest typed-modules-lower-legacy-pair-intrinsics
   (let [kir {:format :kotoba.kir/v4
@@ -711,7 +728,7 @@
                         7 pointer count fallback 16 8 8 16 8 8
                         1 -1))
             :wasm32-wasi-kotoba-v1 opts)))
-      (is (bytes?
+      (is (module-bytes?
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-option-list-capability-count
@@ -727,7 +744,7 @@
                         7 pointer count fallback 16 1 1 12 4 4
                         2 1))
             :wasm32-wasi-kotoba-v1 opts)))
-      (is (bytes?
+      (is (module-bytes?
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-option-list-capability-count
@@ -747,7 +764,7 @@
                       7 'pointer 'count 'fallback 16 16 8 16 8 8
                       invalid-plan))
               :wasm32-wasi-kotoba-v1 opts))))
-      (is (bytes?
+      (is (module-bytes?
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-option-list-capability-count
@@ -768,7 +785,7 @@
                       7 'pointer 'count 'fallback 16 8 4 12 4 4
                       invalid-plan))
               :wasm32-wasi-kotoba-v1 opts))))
-      (is (bytes?
+      (is (module-bytes?
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-option-list-capability-count
@@ -791,7 +808,7 @@
                       7 'pointer 'count 'fallback 16 12 4 12 4 4
                       invalid-plan))
               :wasm32-wasi-kotoba-v1 opts))))
-      (is (bytes?
+      (is (module-bytes?
            (wasm/emit-component-core
             (assoc-in kir [:functions 0 :body]
                       '(component-option-list-capability-count
@@ -1195,4 +1212,4 @@
                                  (list 'hetero-vector-new type 1 2 3)
                                  2 7)
                            2)}]}]
-    (is (bytes? (wasm/emit kir :wasm32-kotoba-v1 {:fuel 512})))))
+    (is (module-bytes? (wasm/emit kir :wasm32-kotoba-v1 {:fuel 512})))))

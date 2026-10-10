@@ -9,10 +9,8 @@
   byte-level port is exactly the kind of change that can look right and be
   wrong."
   (:require [kotoba.lang.error :as kerror] [kotoba.io :as kio] [kotoba.test :refer [deftest is testing]]
-            [clojure.java.io :as io]
             [kotoba.lang.text :as str]
             [kotoba.wasm.core :as wasm]
-            [kotoba.kir.value :as value]
             [kotoba.wasm.tools :as wasm-tools]))
 
 (def ^:private wasmtime-binary
@@ -88,9 +86,11 @@
     (is (= wasm/component-arena-capacity
            (* wasm/component-memory-pages 65536))))
   (testing "the arena covers a maximum request and result in one call"
-    ;; value/vector-item-limit i64 elements. If the item limit moves, the page
-    ;; count must move with it -- this is the assertion that says so.
-    (is (<= (* 2 value/vector-item-limit 8)
+    ;; wasm/component-vector-item-budget i64 elements: the per-host budget the
+    ;; memory is sized from (adr-2609242100 P1), no longer the language's
+    ;; value/vector-item-limit (2^24 since 2026-09-16, which would need 257
+    ;; pages). If the budget moves, the page count must move with it.
+    (is (<= (* 2 wasm/component-vector-item-budget 8)
             (- wasm/component-arena-capacity wasm/component-arena-base))
         "maximum :vector-i64 request and result must coexist above the base"))
   (testing "the module declares the pages the capacity assumes"
@@ -117,11 +117,15 @@
                 ;; run-command! merges stderr, and wasmtime prints two
                 ;; `--invoke is experimental` warnings before the value, so
                 ;; take the last non-blank line rather than the whole output.
+                ;; On nbb the merge is stdout THEN stderr, so the warnings come
+                ;; last; drop them by their prefix rather than by position.
                 (->> (wasm-tools/run-command!
                       (concat [wasmtime-binary "run" "--invoke" "cm32p2_realloc" path]
                               (map str args)))
                      str str/split-lines
-                     (remove str/blank?) last str/trim))]
+                     (remove str/blank?)
+                     (remove #(str/starts-with? (str/trim %) "warning:"))
+                     last str/trim))]
         ;; wasmtime prints the returned i32; a trap makes run-command! throw.
         (testing "a zero-sized request returns the null pointer"
           (is (= "0" (call 0 0 8 0))))

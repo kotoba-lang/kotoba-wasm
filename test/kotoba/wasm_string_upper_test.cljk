@@ -8,6 +8,14 @@
             [kotoba.test :refer [deftest is]]
             [kotoba.wasm.core :as wasm]))
 
+;; An emitted module is a byte array on the JVM and a Uint8Array on nbb;
+;; `bytes?` and `count` answer only the first (root ADR-2610100200 group B).
+(defn- module-bytes? [x]
+  #?(:clj (bytes? x) :cljs (instance? js/Uint8Array x)))
+
+(defn- byte-count [x]
+  #?(:clj (alength ^bytes x) :cljs (.-length x)))
+
 (deftest string-upper-lowers-to-the-typed-string-upper-import
   (let [kir {:format :kotoba.kir/v4
              :exports ['up]
@@ -18,8 +26,8 @@
                :result :string :effects #{} :body '(string-upper s)}]}
         bytes (wasm/emit kir :wasm32-browser-kotoba-v1)
         path (kio/temp-file "kotoba-wasm-string-upper-" ".wasm")]
-    (is (bytes? bytes))
-    (is (pos? (count bytes)))
+    (is (module-bytes? bytes))
+    (is (pos? (byte-count bytes)))
     (try
       (kio/write-bytes path ^bytes bytes)
       (let [validated (shell/sh "wasm-tools" "validate" (str path))
