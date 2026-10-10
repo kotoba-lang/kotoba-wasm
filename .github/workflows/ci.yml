@@ -8,11 +8,9 @@ on:
 jobs:
   test:
     # The suite is .cljk. `clojure -M:test` found none of it and reported
-    # "Ran 0 tests" as success; the portable suite (run-tests.cljk) runs on kbb
-    # (root ADR-2610100200), and a run of zero tests fails here. The tool-
-    # driven tests (wasm-tools / wasmtime) do not run on kbb yet: they call a
-    # JVM-only file check (canExecute) -- a separate change. The tools stay
-    # installed for it.
+    # "Ran 0 tests" as success; the whole suite now runs on kbb (root
+    # ADR-2610100200), tool-driven tests included, and fewer than the 124 tests
+    # measured on 2026-10-10 fails here, as does any failure or error.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,12 +32,13 @@ jobs:
             | tar -xJ -C "$HOME/.wasm-bin" --strip-components=1 --wildcards '*/wasmtime'
           echo "$HOME/.wasm-bin" >> "$GITHUB_PATH"
       - run: wasm-tools --version && wasmtime --version
-      - name: run-tests.cljk on kbb
+      - name: kbb -M:test
         run: |
           set -o pipefail
-          kbb --backend sci --classpath "src:test:$(kbb -Spath -M:test)" run-tests.cljk 2>&1 | tee run-tests.log
-          grep -E '^Ran [1-9][0-9]* tests containing [0-9]+ assertions\.$' run-tests.log
-          grep -E '^0 failures, 0 errors\.$' run-tests.log
+          kbb -M:test 2>&1 | tee kbb-test.log
+          line=$(grep -E '^kbb test: [0-9]+ test\(s\), [0-9]+ pass, 0 fail, 0 error$' kbb-test.log)
+          tests=$(echo "$line" | sed -E 's/^kbb test: ([0-9]+) test.*/\1/')
+          test "$tests" -ge 124
 
   # This repo's own suite passing is not enough: it is a library whose only
   # compiler consumer is kotoba-lang/amu (formerly kotoba-lang/compiler), and a
