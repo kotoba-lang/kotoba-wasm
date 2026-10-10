@@ -2097,7 +2097,12 @@
             (emit*
               ([form env] (emit* form env 0))
               ([form env tail-loop-depth]
-               (charged form (emit-unmetered* form env tail-loop-depth))))
+               ;; Consensus gas, as on the i64 path (`emit-expr`): the form's
+               ;; debit goes in front of its fuel debit and its operands.
+               (let [code (charged form (emit-unmetered* form env tail-loop-depth))]
+                 (if (and (:gas intrinsic-indices) (seq? form))
+                   (concat (gas-charge (:gas intrinsic-indices) form function-indices) code)
+                   code))))
             (emit-unmetered*
               ([form env tail-loop-depth]
                (cond
@@ -3591,8 +3596,9 @@
 (defn- gas-budget!
   "Consensus gas is opt-in and needs its schedule: either alone is refused,
   never defaulted (a defaulted schedule is another chain's receipt). It is
-  emitted on the i64 path only so far; a typed (KIR v4) or component module
-  that asks for it is refused rather than emitted unmetered."
+  emitted on the i64 path and the typed (KIR v4) path, by the same per-form
+  rule; a component module that asks for it is refused rather than emitted
+  unmetered."
   [gas schedule typed? component?]
   (when (or gas schedule)
     (let [refuse (fn [reason]
@@ -3607,7 +3613,6 @@
                      (every? (fn [[k v]] (and (symbol? k) (integer? v) (not (neg? v))))
                              (:weights schedule)))
         (refuse :gas-schedule))
-      (when typed? (refuse :gas-typed-module-unimplemented))
       (when component? (refuse :gas-component-unimplemented)))))
 
 (defn- fuel-budget! [fuel]
@@ -4243,7 +4248,10 @@
                                                               :component-realloc
                                                               realloc-function-index
                                                               :typed-scratch-global
-                                                              scratch-global-index)
+                                                              scratch-global-index
+                                                              :gas
+                                                              (when gas {:global gas-global-index
+                                                                         :schedule gas-schedule}))
                                                        descriptor-indices literal-indices signatures
                                                        opts)
                              (function-body % indices intrinsic-indices
