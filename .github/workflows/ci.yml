@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: kotoba-lang/kotoba/.github/actions/setup-kbb@485a8e9716a330e616ccb5bc9fa5d45104326382
+      - uses: kotoba-lang/setup-kbb@19f38b03b81ad038ff3c0393a2c55ebef8889901
       # The suite shells out to the pinned official tooling for real encode and
       # execute checks. Without them 24 tests error out instead of failing --
       # which is exactly how the first CI run on this branch looked. They had
