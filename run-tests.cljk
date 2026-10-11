@@ -19,7 +19,8 @@
             [kotoba.wasm-document-bytes-link-test]
             [kotoba.wasm-gas-test]
             [kotoba.wasm-tools-portable-test]
-            [kotoba.wasm-typed-cap-scalar-test]))
+            [kotoba.wasm-typed-cap-scalar-test]
+            [kotoba.wasm-typed-lowering-gaps-test]))
 
 (defmethod t/report [:cljs.test/default :end-run-tests] [m]
   (println (str "\nnbb: " (:test m) " tests, " (:pass m) " passed, "
@@ -32,4 +33,5 @@
              'kotoba.wasm-document-bytes-link-test
              'kotoba.wasm-gas-test
              'kotoba.wasm-tools-portable-test
-             'kotoba.wasm-typed-cap-scalar-test)
+             'kotoba.wasm-typed-cap-scalar-test
+             'kotoba.wasm-typed-lowering-gaps-test)
