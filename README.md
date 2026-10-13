@@ -64,7 +64,7 @@ memory and bump pointer are never exported. See ADR 0045.
 
 ## Depends on
 
-- `kotoba-lang/kotoba-kir`
+- `kotoba-lang/osaho` (formerly `kotoba-kir`)
 
 ## Test
 
