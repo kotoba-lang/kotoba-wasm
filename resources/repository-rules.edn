@@ -7,4 +7,4 @@
   :tier :t2
   :role :backend
   :must-not [:parse-kotoba-source :own-language-semantics :link-or-execute]
-  :depends-on ["kotoba-lang/kotoba-kir"]}}
+  :depends-on ["kotoba-lang/osaho"]}}
