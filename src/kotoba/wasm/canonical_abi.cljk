@@ -249,7 +249,7 @@
               {:descriptor descriptor
                :count (count item-descriptors)
                :max value/canonical-tuple-item-limit}))
-    (let [item-layouts (mapv #(layout* % schemas visited) item-descriptors)]
+    (let [item-layouts (mapv (fn [x] (layout* x schemas visited)) item-descriptors)]
       (merge {:descriptor descriptor
               :kind :tuple
               :item-layouts item-layouts}
@@ -519,7 +519,7 @@
   (when-not (= (count params) (count param-types))
     (reject "parameter names and types differ in arity"
             {:function name :params (count params) :types (count param-types)}))
-  (let [parameter-layouts (mapv #(layout % schemas) param-types)
+  (let [parameter-layouts (mapv (fn [x] (layout x schemas)) param-types)
         result-layout (layout result schemas)
         result-flat (:flat result-layout)
         indirect-result? (> (count result-flat) 1)]
